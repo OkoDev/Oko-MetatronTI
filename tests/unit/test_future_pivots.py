@@ -64,7 +64,7 @@ class TestFutureDailyPivots:
         calc.pivot_cache = {}
         dc = _make_data_collector(_make_ohlcv(n=8))
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             calc.get_future_daily_pivots("BTCUSDT", dc)
         )
         assert result is not None
@@ -91,7 +91,7 @@ class TestFutureDailyPivots:
         })
         dc = _make_data_collector(df)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             calc.get_future_daily_pivots("BTCUSDT", dc)
         )
         assert result is not None
@@ -111,7 +111,7 @@ class TestFutureDailyPivots:
         }
         dc = _make_data_collector(None)  # не должен вызываться
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             calc.get_future_daily_pivots("BTCUSDT", dc, ttl_sec=60)
         )
         assert result is not None
@@ -131,7 +131,7 @@ class TestFutureDailyPivots:
         }
         dc = _make_data_collector(_make_ohlcv(n=5))
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             calc.get_future_daily_pivots("BTCUSDT", dc, ttl_sec=60)
         )
         assert result is not None
@@ -143,7 +143,7 @@ class TestFutureDailyPivots:
         calc.pivot_cache = {}
         dc = _make_data_collector(pd.DataFrame())
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             calc.get_future_daily_pivots("BTCUSDT", dc)
         )
         assert result is None
@@ -154,7 +154,7 @@ class TestFutureDailyPivots:
         calc.pivot_cache = {}
         dc = _make_data_collector(None)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             calc.get_future_daily_pivots("BTCUSDT", dc)
         )
         assert result is None
@@ -165,7 +165,7 @@ class TestFutureDailyPivots:
         calc.pivot_cache = {}
         dc = _make_data_collector(_make_ohlcv(n=3))
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             calc.get_future_daily_pivots("ETHUSDT", dc)
         )
         if result:
@@ -200,7 +200,7 @@ class TestFutureWeeklyPivots:
         calc.pivot_cache = {}
         dc = _make_data_collector(self._week_start_ohlcv())
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             calc.get_future_weekly_pivots("BTCUSDT", dc)
         )
         assert result is not None
@@ -219,7 +219,7 @@ class TestFutureWeeklyPivots:
         }
         dc = _make_data_collector(None)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             calc.get_future_weekly_pivots("BTCUSDT", dc)
         )
         assert result["PP"] == 300.0
@@ -252,7 +252,7 @@ class TestFutureMonthlyPivots:
         calc.pivot_cache = {}
         dc = _make_data_collector(self._month_start_ohlcv())
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             calc.get_future_monthly_pivots("BTCUSDT", dc)
         )
         assert result is not None
@@ -271,7 +271,7 @@ class TestFutureMonthlyPivots:
         }
         dc = _make_data_collector(None)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             calc.get_future_monthly_pivots("ETHUSDT", dc, ttl_sec=60)
         )
         assert result["PP"] == 1500.0

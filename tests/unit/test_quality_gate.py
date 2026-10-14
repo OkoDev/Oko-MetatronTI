@@ -102,7 +102,7 @@ class TestCollectAllSignalsQuality:
 
         ti.data_collector.get_ohlcv = mock_get_ohlcv
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             ti._collect_all_signals("BTC/USDT")
         )
         assert isinstance(result, tuple), "должен вернуть tuple"
@@ -120,7 +120,7 @@ class TestCollectAllSignalsQuality:
 
         ti.data_collector.get_ohlcv = mock_get_ohlcv
 
-        signals, quality = asyncio.get_event_loop().run_until_complete(
+        signals, quality = asyncio.run(
             ti._collect_all_signals("BTC/USDT")
         )
         assert signals is None, "При отсутствии 1h OHLCV должен вернуть None"
@@ -151,7 +151,7 @@ class TestCollectAllSignalsQuality:
         original = ti_mod.check_wt_signals
         ti_mod.check_wt_signals = boom
         try:
-            signals, quality = asyncio.get_event_loop().run_until_complete(
+            signals, quality = asyncio.run(
                 ti._collect_all_signals("BTC/USDT")
             )
             assert quality == "degraded", f"Expected degraded, got {quality}"
@@ -191,7 +191,7 @@ class TestCollectAllSignalsQuality:
         for name in originals:
             setattr(ti_mod, name, empty)
         try:
-            signals, quality = asyncio.get_event_loop().run_until_complete(
+            signals, quality = asyncio.run(
                 ti._collect_all_signals("BTC/USDT")
             )
             assert quality == "full", f"Expected full, got {quality}"
@@ -223,7 +223,7 @@ class TestAnalyzeSymbolQualityMetadata:
         ti._get_market_context = AsyncMock(return_value=ctx)
         ti._validate_market_context = lambda _: True
 
-        rec = asyncio.get_event_loop().run_until_complete(
+        rec = asyncio.run(
             ti.analyze_symbol("BTC/USDT", pre_collected_signals=sigs)
         )
         # rec может быть None если стратегия не сработала — это ок, тестируем только что metadata заполняется
@@ -245,7 +245,7 @@ class TestAnalyzeSymbolQualityMetadata:
         ti._validate_market_context = lambda _: True
 
         before = datetime.now()
-        rec = asyncio.get_event_loop().run_until_complete(
+        rec = asyncio.run(
             ti.analyze_symbol("BTC/USDT", pre_collected_signals=sigs)
         )
         after = datetime.now()
@@ -268,7 +268,7 @@ class TestAnalyzeSymbolQualityMetadata:
             return [_sig(SignalType.CONFLUENCE, SignalDirection.LONG, 75, 0.85)], "degraded"
         ti._collect_all_signals = _degraded_collect
 
-        rec = asyncio.get_event_loop().run_until_complete(
+        rec = asyncio.run(
             ti.analyze_symbol("BTC/USDT")
         )
         if rec is not None and rec.metadata:
@@ -282,7 +282,7 @@ class TestAnalyzeSymbolQualityMetadata:
             return None, "full"
         ti._collect_all_signals = _hard_fail
 
-        rec = asyncio.get_event_loop().run_until_complete(
+        rec = asyncio.run(
             ti.analyze_symbol("BTC/USDT")
         )
         assert rec is None, "При критичной ошибке данных должен вернуть None"

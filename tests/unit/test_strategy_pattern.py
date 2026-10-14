@@ -266,7 +266,7 @@ class TestTradingIntelligenceStrategyPattern:
         ti = self._make_ti()
         ctx = _ctx()
         conf_sig = [_sig(SignalType.CONFLUENCE, SignalDirection.LONG, 75, 0.85)]
-        rec = asyncio.get_event_loop().run_until_complete(
+        rec = asyncio.run(
             ti._run_strategy("BTC/USDT", conf_sig, ctx)
         )
         assert rec is not None
@@ -276,7 +276,7 @@ class TestTradingIntelligenceStrategyPattern:
         ti = self._make_ti()
         ctx = _ctx()
         conf_sig = [_sig(SignalType.CONFLUENCE, SignalDirection.LONG, 75, 0.85)]
-        all_recs = asyncio.get_event_loop().run_until_complete(
+        all_recs = asyncio.run(
             ti._run_all_strategies("BTC/USDT", conf_sig, ctx)
         )
         # reversal_scanner должна выдать результат (есть CONFLUENCE-сигнал)
@@ -288,7 +288,7 @@ class TestTradingIntelligenceStrategyPattern:
         ctx = _ctx()
         # MTF_SIGNAL — не CONFLUENCE, reversal_scanner вернёт None
         non_conf_sigs = [_sig(SignalType.MTF_ALERT, SignalDirection.LONG, 70, 0.8)]
-        rec = asyncio.get_event_loop().run_until_complete(
+        rec = asyncio.run(
             ti._run_strategy("BTC/USDT", non_conf_sigs, ctx)
         )
         assert rec is None

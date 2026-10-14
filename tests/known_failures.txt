@@ -1,12 +1,19 @@
 # Известные падения юнит-тестов — базовая линия для scripts/test_gate.py.
 # Ворота падают только на НОВЫХ падениях: список чинится постепенно,
 # но расти ему не дают. Обновлять: python scripts/test_gate.py --update
-# 🔴 14.10: +16 падений test_trade_router и часть test_quality_gate — НЕ сломанные тесты.
-# Сами тесты корректны (изолированно test_trade_router.py = 17 passed). Они падают КАСКАДОМ в полном
-# прогоне: тесты выше по алфавиту создают временную sqlite без таблицы simulated_trades и оставляют
-# глобальный путь БД — router.fit/predict потом читает её (no such table). Всплыло после переноса
-# 7 файлов из корня tests/ в unit/ (ARCH-148.4): раньше эти тесты ворота НЕ прогоняли вовсе.
-# Чинить изоляцией (autouse-фикстура пути БД), а не самими тестами — задача ARCH-148.8.1.
+#
+# 🟢 14.10 (ARCH-148.4.1): каскад из 27 падений УСТРАНЁН. Диагноз в прошлой версии шапки был НЕВЕРЕН:
+#   дело не в БД-пути, а в `asyncio.get_event_loop().run_until_complete(...)` в 6 файлах тестов.
+#   В Python 3.12 get_event_loop() больше не создаёт луп молча: как только любой тест выше по прогону
+#   вызывает asyncio.run() (тот сбрасывает текущий луп в None), все последующие get_event_loop()
+#   падают с «no current event loop». Изолированно файлы проходили, в полном прогоне — каскад.
+#   Всплыло после переноса 7 файлов из tests/ в tests/unit/ (ARCH-148.4). Починено заменой на
+#   asyncio.run() (свой луп на вызов, не зависит от глобального состояния): test_trade_router (16),
+#   test_quality_gate (8), test_strategy_pattern (3) — теперь зелёные и в полном прогоне.
+#
+# 🔴 Ниже — 12 ПОДЛИННЫХ падений: валятся и изолированно, это не каскад. Триаж — ARCH-148.7
+#   (чинить тест или удалять как устаревший, поштучно). dedup — свой tmp-DB с неполной схемой;
+#   liquidity_sweep / execution_calc_parity / smc(FVG min_size) — расхождение теста с кодом.
 tests/unit/test_dedup_trades.py::test_dedup_allows_after_close
 tests/unit/test_dedup_trades.py::test_dedup_allows_different_symbol
 tests/unit/test_dedup_trades.py::test_dedup_first_trade_registers
@@ -18,31 +25,4 @@ tests/unit/test_liquidity_sweep_detector.py::TestLiquiditySweepSignal::test_long
 tests/unit/test_liquidity_sweep_detector.py::TestLiquiditySweepSignal::test_pivot_bonus_applied_for_cluster_confluence
 tests/unit/test_liquidity_sweep_detector.py::TestLiquiditySweepSignal::test_pivot_fallback_still_works
 tests/unit/test_liquidity_sweep_detector.py::TestLiquiditySweepSignal::test_symbol_and_timeframe
-tests/unit/test_quality_gate.py::TestAnalyzeSymbolQualityMetadata::test_degraded_quality_from_collect
-tests/unit/test_quality_gate.py::TestAnalyzeSymbolQualityMetadata::test_hard_block_returns_none_on_missing_data
-tests/unit/test_quality_gate.py::TestAnalyzeSymbolQualityMetadata::test_pre_collected_gets_full_quality
-tests/unit/test_quality_gate.py::TestAnalyzeSymbolQualityMetadata::test_snapshot_time_is_recent_isoformat
-tests/unit/test_quality_gate.py::TestCollectAllSignalsQuality::test_degraded_when_checker_fails
-tests/unit/test_quality_gate.py::TestCollectAllSignalsQuality::test_full_quality_when_all_succeed
-tests/unit/test_quality_gate.py::TestCollectAllSignalsQuality::test_hard_block_on_missing_1h
-tests/unit/test_quality_gate.py::TestCollectAllSignalsQuality::test_returns_tuple
 tests/unit/test_smc_layer.py::TestFVG::test_min_size_filter
-tests/unit/test_strategy_pattern.py::TestTradingIntelligenceStrategyPattern::test_run_all_strategies_returns_dict
-tests/unit/test_strategy_pattern.py::TestTradingIntelligenceStrategyPattern::test_run_strategy_returns_none_on_no_signal
-tests/unit/test_strategy_pattern.py::TestTradingIntelligenceStrategyPattern::test_run_strategy_returns_recommendation
-tests/unit/test_trade_router.py::TestDedupOpen::test_different_mode_passes
-tests/unit/test_trade_router.py::TestDedupOpen::test_different_symbol
-tests/unit/test_trade_router.py::TestDedupOpen::test_no_open_trades
-tests/unit/test_trade_router.py::TestDedupOpen::test_same_mode_blocks
-tests/unit/test_trade_router.py::TestMinSlDist::test_normal_distance
-tests/unit/test_trade_router.py::TestMinSlDist::test_too_close
-tests/unit/test_trade_router.py::TestRegimeSafety::test_no_regime
-tests/unit/test_trade_router.py::TestRegimeSafety::test_other_combo_no_penalty
-tests/unit/test_trade_router.py::TestRegimeSafety::test_wt_signal_short_trend_up
-tests/unit/test_trade_router.py::TestRrFilter::test_rr_above_min
-tests/unit/test_trade_router.py::TestRrFilter::test_rr_below_min
-tests/unit/test_trade_router.py::TestStrengthThreshold::test_above_min
-tests/unit/test_trade_router.py::TestStrengthThreshold::test_below_min_soft
-tests/unit/test_trade_router.py::TestValidateInputs::test_happy_path
-tests/unit/test_trade_router.py::TestValidateInputs::test_neutral_direction
-tests/unit/test_trade_router.py::TestValidateInputs::test_no_entry

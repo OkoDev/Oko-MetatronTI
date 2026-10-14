@@ -129,7 +129,7 @@ class TestCubeSelftest:
     def test_all_checks_run_without_exception(self, bot):
         """Все 37 проверок (13+21+4) должны выполниться без исключений."""
         from core.selftest_cube import run_cube_selftest, format_cube_report
-        results = asyncio.get_event_loop().run_until_complete(run_cube_selftest(bot))
+        results = asyncio.run(run_cube_selftest(bot))
         assert len(results) >= 37, f"Ожидается ≥37 проверок, получено {len(results)}"
         report = format_cube_report(results)
         assert "L13" in report and "L14" in report
@@ -191,7 +191,7 @@ class TestCubeSelftest:
     def test_no_missing_critical_edges(self, bot):
         """Критические рёбра не должны быть MISSING."""
         from core.selftest_cube import run_cube_selftest, MISSING
-        results = asyncio.get_event_loop().run_until_complete(run_cube_selftest(bot))
+        results = asyncio.run(run_cube_selftest(bot))
         critical = {
             "E_BTC_TI", "E_TS_PTA", "E_PTA_PC", "E_PTA_TI",
             "E_TI_PC", "E_TI_TS", "E_TS_PC",
@@ -225,7 +225,7 @@ class TestBTCRegimeProvider:
         dc = MagicMock()
         dc.get_ohlcv = AsyncMock(return_value=df)
 
-        asyncio.get_event_loop().run_until_complete(p.update(dc))
+        asyncio.run(p.update(dc))
         assert p.get_btc_mode() in ("BULL", "NEUTRAL"), f"Ожидали BULL, получили {p.get_btc_mode()}"
         assert p._updated_at is not None
 
@@ -241,7 +241,7 @@ class TestBTCRegimeProvider:
         dc = MagicMock()
         dc.get_ohlcv = AsyncMock(return_value=df)
 
-        asyncio.get_event_loop().run_until_complete(p.update(dc))
+        asyncio.run(p.update(dc))
         assert p.get_btc_mode() in ("BEAR", "NEUTRAL"), f"Ожидали BEAR, получили {p.get_btc_mode()}"
 
     def test_ttl_prevents_double_fetch(self):
@@ -252,8 +252,8 @@ class TestBTCRegimeProvider:
         dc = MagicMock()
         dc.get_ohlcv = AsyncMock(return_value=df)
 
-        asyncio.get_event_loop().run_until_complete(p.update(dc))
-        asyncio.get_event_loop().run_until_complete(p.update(dc))  # сразу второй
+        asyncio.run(p.update(dc))
+        asyncio.run(p.update(dc))  # сразу второй
         assert dc.get_ohlcv.call_count == 1, "TTL не сработал — fetch вызван дважды"
 
     def test_wired_to_ti(self):
@@ -307,7 +307,7 @@ class TestBTCRegimeInMetadata:
         ti._pair_context_bus = pc
         ti._btc_provider = prov          # ARCH-78 wire
 
-        rec = asyncio.get_event_loop().run_until_complete(
+        rec = asyncio.run(
             ti.analyze_symbol("BTC/USDT:USDT")
         )
         # Recommendation может быть None если нет сигнала — это нормально.
@@ -386,7 +386,7 @@ if __name__ == "__main__":
 
         from core.selftest_cube import run_cube_selftest, format_cube_report, MISSING, ACTIVE, SHADOW
 
-        results = asyncio.get_event_loop().run_until_complete(run_cube_selftest(bot))
+        results = asyncio.run(run_cube_selftest(bot))
         print(format_cube_report(results))
 
         # Сводка
@@ -403,19 +403,19 @@ if __name__ == "__main__":
         df_bull = _make_ohlcv(n=120, trend=0.05)
         dc_mock = MagicMock()
         dc_mock.get_ohlcv = AsyncMock(return_value=df_bull)
-        asyncio.get_event_loop().run_until_complete(p.update(dc_mock))
+        asyncio.run(p.update(dc_mock))
         print(f"После bull OHLCV: mode={p.get_btc_mode()}, updated_at={p._updated_at}")
 
         df_bear = _make_ohlcv(n=120, trend=-0.05)
         dc_mock2 = MagicMock()
         dc_mock2.get_ohlcv = AsyncMock(return_value=df_bear)
         p2 = BTCRegimeProvider()
-        asyncio.get_event_loop().run_until_complete(p2.update(dc_mock2))
+        asyncio.run(p2.update(dc_mock2))
         print(f"После bear OHLCV: mode={p2.get_btc_mode()}, updated_at={p2._updated_at}")
 
         print("\nTTL test: второй update сразу →")
         call_count_before = dc_mock.get_ohlcv.call_count
-        asyncio.get_event_loop().run_until_complete(p.update(dc_mock))
+        asyncio.run(p.update(dc_mock))
         assert dc_mock.get_ohlcv.call_count == call_count_before, "TTL не сработал!"
         print("  fetch НЕ вызван повторно ✅")
 

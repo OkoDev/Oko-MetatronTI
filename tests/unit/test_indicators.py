@@ -217,7 +217,7 @@ class IndicatorTester:
             context_df = df.iloc[i-WINDOW:i+1].reset_index(drop=True)
             try:
                 import asyncio
-                sigs = asyncio.get_event_loop().run_until_complete(
+                sigs = asyncio.run(
                     check_divergence_signals(self.symbol, context_df)
                 )
                 for sig in sigs:
@@ -255,7 +255,7 @@ class IndicatorTester:
         for i in range(WINDOW, len(df), 5):
             context_df = df.iloc[i-WINDOW:i+1].reset_index(drop=True)
             try:
-                sigs = asyncio.get_event_loop().run_until_complete(
+                sigs = asyncio.run(
                     check_anomaly_signals(self.symbol, context_df)
                 )
                 for sig in sigs:
