@@ -213,6 +213,8 @@ _EVENT_META: Dict[str, tuple] = {
     "CASCADE_UPDATED":    ("trade_simulator (Сфера 11)", "{cascade_count,avg_r,direction}", "обновление каскада"),
     "OTE_ZONE_SET":       ("ote_observer (Сфера 11)", "{ote_top,ote_bot,direction,ttl_hours}", "OTE-зона установлена"),
     "SPHERE_HEALTH":      ("sphere_registry (Сфера 12)", "{sphere_id,status,last_update}", "здоровье сферы"),
+    "SATELLITE_SMOKE":    ("pm2_smoke (Сфера 12)", "{total,ok,failed,stale,red_list,mode,ts}",
+                            "дымовой тест спутников pm2: кто молчит/упал; symbol=*SATELLITES* (ARCH-148.6)"),
     "WATCH_STATE_CHANGED": ("вахты вне бота: scripts/_alert.py (ADR-003 шаг 4)", "{key,state,title,text,prev}",
                             "смена состояния внешней вахты (long_watch, drift_zone); symbol=*MARKET*"),
     "FUNDING_UPDATED":    ("market_data_sphere (Сфера 19)", "{rate,interval_h,source,pct_8h,streak,pctile_90d}", "фандинг пары"),
@@ -228,7 +230,8 @@ _EVENT_META: Dict[str, tuple] = {
 EVENT_CLASS: Dict[str, str] = {
     "ohlcv_updated": "state", "tick_price": "state", "wt_verdict": "state", "wt_snap_updated": "state",
     "smc_verdict": "state", "smc_snap_updated": "state", "regime_updated": "state",
-    "pivot_snap_updated": "state", "sphere_health": "state", "funding_updated": "state",
+    "pivot_snap_updated": "state", "sphere_health": "state", "satellite_smoke": "state",
+    "funding_updated": "state",
     "oi_updated": "state", "cascade_updated": "state",
     "signal_detected": "fact", "anomaly_detected": "fact", "volume_spike": "fact",
     "divergence_found": "fact", "pivot_touch": "fact", "cross_market": "fact",
