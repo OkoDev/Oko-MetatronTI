@@ -58,11 +58,25 @@ def get_summary(
     execution_mode: Optional[str] = None,
     status: Optional[str] = None,
 ) -> dict:
-    """Агрегаты: n, sumR, avgR, WR по фильтру.
+    """Агрегаты: n, sumR, avgR, WR + net% по фильтру.
 
     status: конкретный закрытый статус (TP/SL/TSL/EXPIRED) → агрегат ТОЛЬКО по нему,
             чтобы шапка терминала совпадала с активной вкладкой таблицы (дашборд-когезия:
-            шапка и таблица = один WHERE). None → по всем закрытым (как было)."""
+            шапка и таблица = один WHERE). None → по всем закрытым (как было).
+
+    🔴 NET% (13.10): R не вычитает издержки, а по реальному счёту комиссии были 57% убытка и
+    на трёх монетах из десяти меняли ЗНАК результата. Ядро весов уже считает в `pct_net`
+    (`trading_intelligence.py:275`), витрина отставала — эти поля закрывают расхождение.
+
+    🔑 Считаем net ТОЛЬКО по строкам с записанным костом (`costs_pct > 0`). Замер 13.10:
+    costs_pct = 0 у 44 230 из 57 499 закрытых, и ненулевые — практически только в чистой эре
+    (SIM 12 020 из 12 022 с 11.07.2026; до эры 55 строк из 44 282). Поэтому net по всей базе
+    был бы фикцией: 77% строк вернули бы profit_pct без костов. `nNet` отдаём рядом, чтобы
+    покрытие было видно в UI, а не домысливалось. Старые поля (n/sumR/avgR/WR) НЕ меняем —
+    их читает ещё и старый дашборд `web/static/index.html`.
+
+    `avgRNet` — средний R по ТЕМ ЖЕ строкам, что и net%: без него `avgR` (вся база) и
+    `avgNetPct` (только с костом) встают в UI рядом как сравнимые, хотя это разные выборки."""
     _CLOSED = ("TP", "SL", "TSL", "EXPIRED")
     params: list = []
     if status in _CLOSED:
@@ -70,8 +84,15 @@ def get_summary(
         params.append(status)
     else:
         where = "status IN ('TP','SL','TSL','EXPIRED') AND R_multiple IS NOT NULL"
+    _net_row = "costs_pct > 0 AND profit_pct IS NOT NULL"
     sql = f"""SELECT COUNT(*) n, SUM(R_multiple) sumR, AVG(R_multiple) avgR,
-             100.0 * SUM(CASE WHEN R_multiple > 0 THEN 1 ELSE 0 END) / COUNT(*) WR
+             100.0 * SUM(CASE WHEN R_multiple > 0 THEN 1 ELSE 0 END) / COUNT(*) WR,
+             SUM(CASE WHEN {_net_row} THEN 1 ELSE 0 END) nNet,
+             AVG(CASE WHEN {_net_row} THEN R_multiple END) avgRNet,
+             AVG(CASE WHEN {_net_row} THEN profit_pct - costs_pct END) avgNetPct,
+             SUM(CASE WHEN {_net_row} THEN profit_pct - costs_pct END) sumNetPct,
+             100.0 * SUM(CASE WHEN {_net_row} AND profit_pct - costs_pct > 0 THEN 1 ELSE 0 END)
+                   / NULLIF(SUM(CASE WHEN {_net_row} THEN 1 ELSE 0 END), 0) wrNet
              FROM simulated_trades
              WHERE {where}"""
     if account_id is not None:

@@ -295,8 +295,9 @@ async def _handle_equity(request: web.Request) -> web.Response:
         _acc = request.query.get("account_id")
         _acc_i = int(_acc) if _acc and _acc.isdigit() else None
         _mode = request.query.get("execution_mode")
-        # DEV-231: тяжёлый payload (3.77 MB) — sync вычисление + JSON serialize в thread pool
-        data = await _run_sync(engine.equity_data, _acc_i, _mode)
+        # 13.10: equity_curve (лёгкая, ~5 КБ) вместо equity_data (13 МБ вешал thread pool → экран
+        # падал на мок). Кумулятив R и прореживание до 180 точек теперь на сервере.
+        data = await _run_sync(engine.equity_curve, _acc_i, _mode)
         payload_str = await _run_sync(json.dumps, data, ensure_ascii=False, default=str)
         return web.Response(
             text=payload_str,
@@ -429,7 +430,9 @@ async def _handle_trades_filtered(request: web.Request) -> web.Response:
 
         payload, xcache = await _TRADES_FILTERED_CACHE.get(key, _compute, cold_timeout=25.0)
         if payload is None:   # COLD ещё считается → warming-пусто (следующий поллинг = HIT)
-            payload = json.dumps({"trades": [], "summary": {"n": 0, "sumR": 0, "avgR": 0, "WR": 0}})
+            payload = json.dumps({"trades": [], "summary": {"n": 0, "sumR": 0, "avgR": 0, "WR": 0,
+                                                            "nNet": 0, "avgNetPct": None,
+                                                            "sumNetPct": None, "wrNet": None}})
         return web.Response(text=payload, content_type="application/json", charset="utf-8",
                             headers={"X-Cache": xcache})
     except Exception as e:
@@ -488,6 +491,14 @@ async def _handle_kpi(request: web.Request) -> web.Response:
                 "avg_r": round(summary.get("avgR") or 0, 3),
                 "sum_r": round(summary.get("sumR") or 0, 1),
                 "closed_per_day": closed_per_day,
+                # 13.10: net% рядом с R — R издержки не вычитает (ядро весов давно на pct_net).
+                # n_net = на скольких сделках кост записан; без него шапка соврёт о покрытии.
+                "n_net": summary.get("nNet") or 0,
+                # avg_r_net — R по тем же строкам, что net%: иначе рядом стоят разные выборки.
+                "avg_r_net": round(summary["avgRNet"], 3) if summary.get("avgRNet") is not None else None,
+                "avg_net_pct": round(summary["avgNetPct"], 4) if summary.get("avgNetPct") is not None else None,
+                "sum_net_pct": round(summary["sumNetPct"], 2) if summary.get("sumNetPct") is not None else None,
+                "win_rate_net": round(summary["wrNet"], 1) if summary.get("wrNet") is not None else None,
             }, ensure_ascii=False),
             content_type="application/json", charset="utf-8")
     except Exception as e:
@@ -1149,6 +1160,11 @@ async def _handle_patterns(request: web.Request) -> web.Response:
     DEV-144 Stage 5: данные для страницы «Паттерны». Возвращает per-pattern walkforward
     статистику (test_n / test_avgR / test_WR) + структуру anchor_factors. Live статистика
     из simulated_trades — TODO (требует pattern_id в features_json).
+
+    🔴 ПАСПОРТ ЧИСЕЛ (13.10): test_* — результат МАЙНИНГА на тестовом сплите, а не форвард
+    после коста, и выражен в R. По закону проекта записанный результат — гипотеза, пока не
+    переизмерен, поэтому ответ несёт `stats_source` / `stats_basis`, а экран их подписывает.
+    Форвард net% по источникам живёт отдельно — в табло терминала :8010 (`_scoreboard`).
     """
     try:
         import yaml as _yaml
@@ -1162,6 +1178,17 @@ async def _handle_patterns(request: web.Request) -> web.Response:
         with open(yaml_path, "r", encoding="utf-8") as f:
             cfg = _yaml.safe_load(f) or {}
 
+        def _jsafe(v):
+            """🔴 13.10: NaN/Infinity из yaml ломали ВЕСЬ экран. `json.dumps` пишет их литералами
+            `NaN`, которые строгий JSON не допускает: браузерный `res.json()` кидал исключение,
+            `useLive` ловил его и молча откатывался на мок `PATTERNS` из `lib/oko-data.ts`.
+            Поэтому Patterns всё время показывал 9 ВЫДУМАННЫХ карточек («OTE + Liquidity Sweep,
+            72% WR, +2.8R, n=184») вместо 168 реальных — и эти числа ушли в ТЗ лендинга как факт.
+            PowerShell/Python такой ответ парсят, браузер — нет, оттого и не было видно."""
+            if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+                return None
+            return v
+
         out = []
         for pid, pdata in (cfg.get("patterns") or {}).items():
             if not isinstance(pdata, dict):
@@ -1170,16 +1197,22 @@ async def _handle_patterns(request: web.Request) -> web.Response:
                 "id": pid,
                 "direction": pdata.get("direction"),
                 "anchor_factors": pdata.get("anchor_factors") or [],
-                "test_n": pdata.get("test_n"),
-                "test_avgR": pdata.get("test_avgR"),
-                "test_WR": pdata.get("test_WR"),
-                "mht_p_adj": pdata.get("mht_p_adj"),
-                "weight": pdata.get("weight"),
-                "priority": pdata.get("priority"),
+                "test_n": _jsafe(pdata.get("test_n")),
+                "test_avgR": _jsafe(pdata.get("test_avgR")),
+                "test_WR": _jsafe(pdata.get("test_WR")),
+                "mht_p_adj": _jsafe(pdata.get("mht_p_adj")),
+                "weight": _jsafe(pdata.get("weight")),
+                "priority": _jsafe(pdata.get("priority")),
                 "sl_source": (pdata.get("sl") or {}).get("source"),
                 "tp_strategy": (pdata.get("tp") or {}).get("strategy"),
                 "time_exit_hours": pdata.get("time_exit_hours"),
-                "status": "live",  # TODO: вычислять из retire/shadow триггеров
+                # 13.10: было захардкожено "live" — API утверждал, что каждый паттерн в бою, хотя
+                # retire/shadow тут не проверяются (и фронт это поле не читает, считает свой статус).
+                # Отдаём то, что реально известно: статус из конфига, если он там есть, иначе неизвестен.
+                "status": pdata.get("status") or "unknown",
+                # Паспорт чисел: test_* — walkforward майнинга, не форвард после коста.
+                "stats_source": "walkforward_mining",
+                "stats_basis": "R_without_costs",
             })
         return web.Response(
             text=json.dumps({

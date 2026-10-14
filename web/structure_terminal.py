@@ -4556,7 +4556,11 @@ async def _breadth_bg(app):
 
 
 def main():
-    app = web.Application()
+    # Витрина 13.10: POST /api/filter и /api/waves/* шли без проверки (замер 12.10 через туннель —
+    # чужая проба затирала результат). Middleware закрывает все изменяющие запросы разом, включая
+    # будущие роуты; GET/HEAD/OPTIONS не затронуты, торговые хендлеры сохраняют свой _is_local.
+    from web.local_guard import local_origin_guard
+    app = web.Application(middlewares=[local_origin_guard])
     app.cleanup_ctx.append(_breadth_bg)
     app.router.add_get("/", agenda_page)
     app.router.add_get("/cockpit", index)

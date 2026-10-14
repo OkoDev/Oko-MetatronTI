@@ -1041,8 +1041,50 @@ class PerformanceEngine:
     # ------------------------------------------------------------------
     # Всё одним вызовом (для /api/stats)
     # ------------------------------------------------------------------
+    def equity_curve(self, account_id=None, execution_mode=None, max_points: int = 180) -> List[Dict[str, Any]]:
+        """Лёгкая equity-кривая: кумулятивный R, прорежённый на сервере до max_points точек.
+
+        🔴 13.10: заменяет `equity_data` на пути /api/equity. Тот тянул 8 колонок × 57 тыс. строк
+        и лепил 13 МБ JSON; фронт из них брал ТОЛЬКО R_multiple, сам считал cumsum и прорежал до 180.
+        13 МБ при поллинге раз в 60 с насыщали thread pool (сам SQL — 0.58 с, но dumps-джобы стопились
+        друг на друге), эндпоинт висел >90 с при таймауте фронта 12 с → экран ВСЕГДА падал на мок
+        EQUITY_CURVE — синтетическую РАСТУЩУЮ кривую, тогда как реальный sum_R ≈ −7650
+        ([[mock_fallback_masked_dead_endpoint]]). Здесь: одна колонка, cumsum и прореживание в SQL/Python,
+        на выходе ~5 КБ. Порядок по closed_at — тот же, что был."""
+        # 🔴 GIL: cumsum и прореживание ЦЕЛИКОМ в SQL, не в Python. Сканер бота непрерывно считает
+        # индикаторы, держа GIL (тот же корень, что у /viz: «3 с автономно, 111-216 с в боте», :3384).
+        # Питоновский цикл по 57 тыс. строк под этой нагрузкой растягивался с 0.5 с до 30-40 с — выше
+        # таймаута фронта 12 с, экран всё равно падал на мок. Оконная функция считается в C (GIL
+        # отпущен на время execute), наружу выходит ~max_points строк, а не 57 тыс. → Python почти
+        # не работает. Замер: /api/kpi (SQL-агрегат) быстрый, тяжёлым был именно перенос строк в Python.
+        where = "status IN ('TP','SL','TSL','EXPIRED') AND R_multiple IS NOT NULL"
+        params: list = []
+        if account_id is not None:
+            where += " AND account_id=?"; params.append(account_id)
+        if execution_mode is not None:
+            where += " AND execution_mode=?"; params.append(execution_mode)
+        with self._conn() as conn:
+            n = conn.execute(f"SELECT COUNT(*) FROM simulated_trades WHERE {where}", params).fetchone()[0]
+            if not n:
+                return []
+            step = max(1, -(-n // max_points))   # ceil(n/max_points)
+            # cumsum оконной функцией; на выходе — первая, каждая step-я и последняя точка
+            rows = conn.execute(f"""
+                WITH seq AS (
+                    SELECT ROW_NUMBER() OVER (ORDER BY closed_at ASC) rn,
+                           SUM(R_multiple) OVER (ORDER BY closed_at ASC
+                                                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) cum
+                    FROM simulated_trades WHERE {where}
+                )
+                SELECT rn, cum FROM seq WHERE rn = 1 OR rn = ? OR rn % ? = 0 ORDER BY rn
+            """, params + [n, step]).fetchall()
+        # day — последовательный индекс 1..~max_points (ось X графика), r — кумулятивный R
+        return [{"day": i + 1, "r": round(row[1] or 0.0, 2)} for i, row in enumerate(rows)]
+
     def equity_data(self, account_id=None, execution_mode=None) -> List[Dict[str, Any]]:
-        """Возвращает закрытые сделки для equity curve в дашборде.
+        """⚠️ 13.10 СУПЕРСЕДЕД `equity_curve()` на пути /api/equity (13 МБ payload вешал thread pool).
+        Больше НЕ вызывается; оставлен как есть на случай другого потребителя закрытых сделок.
+        Возвращает закрытые сделки для equity curve в дашборде.
         ARCH-DB-V2 Ф2: опц. фильтр account_id / execution_mode (переключение акк на графике)."""
         sql = """
             SELECT symbol, status, R_multiple, closed_at,
