@@ -87,25 +87,25 @@ class TestValidateEntry:
 # ── 4. clamp_leverage воспроизводит open_bracket:469-487 ──────────────────────
 class TestClampLeverage:
     def test_no_clamp_when_safe(self):
-        # SL 5% → safe ~ int(1/(0.05+0.005))=18; pair_max None; req 5 < 18
+        # SL 5%, буфер 1.5% → safe = int(1/(0.05+0.015)) = 15; pair_max None; req 5 < 15 → без клампа
         lev, reason = calc.clamp_leverage(5, 100.0, 95.0, pair_max=None)
         assert lev == 5 and reason is None
 
     def test_pair_max_clamp(self):
         lev, reason = calc.clamp_leverage(50, 100.0, 95.0, pair_max=20)
-        # SL 5% safe=18 < 20 → итог 18, но reason содержит и cap пары
-        assert lev == 18
+        # SL 5%, буфер 1.5% → safe=15 < 20 → итог 15, reason содержит и cap пары (50→20), и SL-safety (20→15)
+        assert lev == 15
         assert "cap пары" in reason and "SL-safety" in reason
 
     def test_pair_max_only(self):
-        # широкий SL 20% → safe=int(1/(0.2+0.005))=4 ... проверим что pair_max доминирует когда safe выше
+        # liq_safety выключен → SL-safety не считается, доминирует только cap пары (50→10)
         lev, reason = calc.clamp_leverage(50, 100.0, 90.0, pair_max=10, liq_safety_enabled=False)
         assert lev == 10 and "cap пары" in reason
 
     def test_sl_safety_popcat_case(self):
-        # POPCAT-кейс: 50×, SL 2.75% → safe = int(1/(0.0275+0.005)) = int(30.7) = 30
+        # POPCAT-кейс: 50×, SL 2.75%, буфер 1.5% → safe = int(1/(0.0275+0.015)) = int(23.5) = 23
         lev, reason = calc.clamp_leverage(50, 100.0, 97.25, pair_max=None)
-        assert lev == 30 and "SL-safety" in reason
+        assert lev == 23 and "SL-safety" in reason
 
     def test_safety_disabled(self):
         lev, reason = calc.clamp_leverage(50, 100.0, 97.25, pair_max=None, liq_safety_enabled=False)

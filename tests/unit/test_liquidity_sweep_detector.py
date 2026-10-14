@@ -34,23 +34,21 @@ def _with_wt(df: pd.DataFrame, wt1: float, wt2: float) -> pd.DataFrame:
 
 
 def _make_cluster_long_df(n: int = 140) -> pd.DataFrame:
-    df = _make_base_df(n=n)
-
-    for idx in (40, 90):
-        df.loc[idx - 2 : idx + 2, "low"] = 0.972
-        df.loc[idx - 2 : idx + 2, "high"] = 0.988
-        df.loc[idx - 2 : idx + 2, "open"] = 0.982
-        df.loc[idx - 2 : idx + 2, "close"] = 0.984
-        df.loc[idx, "low"] = 0.94
-        df.loc[idx, "open"] = 0.982
-        df.loc[idx, "close"] = 0.983
-        df.loc[idx, "high"] = 0.989
-
-    df.loc[n - 1, "low"] = 0.936
-    df.loc[n - 1, "open"] = 0.947
-    df.loc[n - 1, "close"] = 0.946
-    df.loc[n - 1, "high"] = 0.95
-    return _with_wt(df, -55.0, -50.0)
+    """🔴 14.10 (ARCH-148.7): собрано как ТОЧНОЕ отражение рабочей _make_cluster_short_df (v→2−v,
+    high↔low, wt→−wt). Прежние руками подобранные лоу давали зигзагу (detect_swing_points) лишь ОДИН
+    свинг на уровне 0.94 — второй спайк зигзаг пропускал (в тот момент искал high), и кластер из ≥2
+    свингов не собирался → детектор возвращал None. Причина несимметрии — общая база _make_base_df
+    (sin одинаков для long и short), поэтому зеркалить числа мало; отражаем весь ряд целиком."""
+    s = _make_cluster_short_df(n=n)
+    return pd.DataFrame({
+        "open": 2.0 - s["open"],
+        "high": 2.0 - s["low"],
+        "low": 2.0 - s["high"],
+        "close": 2.0 - s["close"],
+        "volume": s["volume"],
+        "wt1": -s["wt1"],
+        "wt2": -s["wt2"],
+    })
 
 
 def _make_cluster_short_df(n: int = 140) -> pd.DataFrame:
@@ -138,7 +136,8 @@ class TestLiquiditySweepSignal:
 
     def test_pivot_fallback_still_works(self):
         df = _make_pivot_only_long_df()
-        pivot_cache = {"TEST/USDT": {"W:S1": 0.95}}
+        # формат ключей детектора: "{symbol}_1W" + inner S1/S2/S3 (liquidity_sweep_detector.py:109-118)
+        pivot_cache = {"TEST/USDT_1W": {"S1": 0.95}}
         result = detect_liquidity_sweep("TEST/USDT", df, pivot_cache=pivot_cache)
         assert result is not None
         assert result.direction == SignalDirection.LONG
@@ -146,7 +145,7 @@ class TestLiquiditySweepSignal:
 
     def test_pivot_bonus_applied_for_cluster_confluence(self):
         df = _make_cluster_long_df()
-        pivot_cache = {"TEST/USDT": {"W:S1": 0.94}}
+        pivot_cache = {"TEST/USDT_1W": {"S1": 0.94}}  # формат ключей детектора (см. detector.py:109-118)
 
         result_no_bonus = detect_liquidity_sweep("TEST/USDT", df, pivot_cache={})
         result_bonus = detect_liquidity_sweep("TEST/USDT", df, pivot_cache=pivot_cache)
