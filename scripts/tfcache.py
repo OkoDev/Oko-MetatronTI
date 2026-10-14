@@ -21,12 +21,25 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import sys
 import time
 from multiprocessing import Pool
 from pathlib import Path
 
 import pandas as pd
+
+
+def _use_windowless_workers() -> None:
+    """Windows: воркеры Pool со spawn получают НОВОЕ окно консоли — при каждом build всплывали пустые
+    python-окна (в т.ч. из ночной pm2-задачи tfcache-refresh 04:20). pythonw.exe делает ту же работу без
+    окна; родитель остаётся на python.exe и печатает отчёт как раньше. На не-Windows и если pythonw нет —
+    ничего не меняем."""
+    if sys.platform != "win32":
+        return
+    pyw = Path(sys.executable).with_name("pythonw.exe")
+    if pyw.exists():
+        multiprocessing.set_executable(str(pyw))
 
 PARQ = Path("C:/oko_data/history/1m")        # источник: минутки Binance (замеры идут на них)
 CACHE = Path("G:/oko_lab/tf")                # приёмник: готовые ТФ для лабораторий
@@ -138,6 +151,7 @@ def _build(procs: int, only_stale: bool, limit: int = 0) -> int:
         print("[tfcache] пересобирать нечего — все ТФ новее своих 1m")
         return 0
     print(f"[tfcache] пересобираю {len(syms)} монет × {len(TFS)} ТФ, процессов {procs}")
+    _use_windowless_workers()
     t0 = time.time()
     done = errs = 0
     with Pool(procs) as pool:
