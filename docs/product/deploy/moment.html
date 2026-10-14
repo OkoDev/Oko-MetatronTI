@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+</head>
+<body>
+<title>Metatron · Повестка</title>
+<meta name="description" content="/moment — публичный разбор дня: вердикт, приборы, идеи. Вкладки по подписке.">
+<style>
+  /* /moment — первый слой целевого прода. Язык из мокапа «ОКО — терминал»: левый рельс,
+     золотой акцент, IBM Plex, экран не нейтрален. Read-only, вкладки гейтятся тарифом. */
+  :root{
+    --bg:#0A0D12; --nav:#0D1117; --panel:#0E1219; --panel2:#121923; --right:#0C1016;
+    --bd:#1C2432; --bd2:#1F2838; --bd3:#253048;
+    --fg:#E8ECF2; --s1:#A9B4C4; --s2:#8E9BB0; --s3:#7C8899; --s4:#5B6678;
+    --gold:#D9A441; --goldsoft:#182134; --green:#4ECB8D; --green2:#5FC08C;
+    --red:#D8614F; --red2:#E07A6B; --amber:#C9893A; --amber2:#D8945A;
+    --sans:"IBM Plex Sans",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,monospace;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;max-width:100%;overflow-x:hidden}
+  body{background:var(--bg);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  a{color:inherit;text-decoration:none}
+  .shell{min-height:100vh;display:flex;flex-wrap:wrap;max-width:100%;overflow-x:hidden}
+  .col,.aside,.body{min-width:0}
+
+  /* рельс */
+  .rail{width:88px;flex:0 0 88px;background:var(--nav);border-right:1px solid var(--bd);
+    display:flex;flex-direction:column;align-items:center;padding:18px 0 22px;gap:4px}
+  .mk{width:34px;height:34px;border:1.5px solid var(--gold);border-radius:50%;display:flex;
+    align-items:center;justify-content:center;margin-bottom:20px;flex:none}
+  .mk i{width:11px;height:11px;border-radius:50%;background:var(--gold)}
+  .tab{width:68px;padding:11px 0;border-radius:9px;display:flex;flex-direction:column;align-items:center;
+    gap:6px;color:var(--s2);position:relative;cursor:pointer}
+  .tab span{font-size:10.5px;font-weight:500}
+  .tab.on{background:var(--goldsoft);color:var(--gold)}
+  .tab.lock{opacity:.5;cursor:default}
+  .tab .lk{position:absolute;top:6px;right:11px;width:11px;height:11px;color:var(--s3)}
+  .railftr{margin-top:auto;text-align:center;color:var(--s4);font-size:10px;font-family:var(--mono);line-height:1.5}
+
+  /* основная колонка */
+  .col{flex:999 1 700px;min-width:0;display:flex;flex-direction:column}
+  .hd{height:56px;flex:0 0 56px;border-bottom:1px solid var(--bd);display:flex;align-items:center;
+    gap:16px;padding:0 24px}
+  .hd .nm{font-size:14px;font-weight:700;letter-spacing:.14em}
+  .hd .dt{font-family:var(--mono);font-size:12px;color:var(--s2)}
+  .hd .demo{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--amber2);background:#1c160b;border:1px solid #2b2316;border-radius:5px;padding:3px 8px}
+  .hd .ea{margin-left:auto;font:600 12px var(--sans);padding:8px 16px;border-radius:7px;background:var(--gold);color:#15110A;cursor:pointer}
+
+  .body{flex:1;padding:24px;display:flex;flex-direction:column;gap:18px}
+
+  /* вердикт */
+  .verdict{position:relative;border:1px solid #2A2418;background:#14110B;border-radius:12px;padding:24px}
+  .vtop{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
+  .vdot{position:absolute;left:10px;top:31px;width:9px;height:9px;border-radius:50%;background:var(--gold)}
+  .vmain{flex:1 1 420px;min-width:0}
+  .vmain h1{margin:0;font-size:clamp(26px,4vw,34px);line-height:1.12;font-weight:700;letter-spacing:-.01em}
+  .vmain .sub{margin:10px 0 0;font-size:15px;line-height:1.6;color:var(--s1);max-width:620px}
+  .vmain .sub b{color:var(--fg);font-weight:600}
+  .vmain .pulse{margin:14px 0 0;display:flex;flex-wrap:wrap;gap:8px}
+  .pchip{font-size:12.5px;color:var(--s1);background:var(--panel);border:1px solid var(--bd2);border-radius:7px;padding:6px 11px}
+  .pchip b{color:var(--fg);font-weight:600}
+  .move{margin:10px 0 0;display:flex;flex-wrap:wrap;gap:16px;font-family:var(--mono);font-size:12px;
+    background:var(--panel);border:1px solid var(--bd2);border-radius:7px;padding:8px 13px}
+  .move .mv{display:flex;align-items:baseline;gap:7px}
+  .move .tf{color:var(--s3);font-size:11px;min-width:46px}
+  .move .dn{color:var(--red2)} .move .up{color:var(--green2)}
+  .move .sep{color:var(--s4)}
+  .measured{margin:12px 0 0;font-size:13.5px;line-height:1.55;color:var(--s1);background:#14110B;
+    border-left:2px solid var(--gold);border-radius:0 8px 8px 0;padding:10px 14px;max-width:720px}
+  .measured .mi{color:var(--gold);font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-right:7px}
+  .measured b{color:var(--fg);font-weight:600}
+  .vcount{flex:0 0 auto;text-align:right;font-family:var(--mono)}
+  .vcount .l{font-size:11px;color:var(--s3);text-transform:uppercase;letter-spacing:.08em}
+  .vcount .n{font-size:26px;font-weight:600;color:var(--s1)}
+
+  .gauges{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:22px}
+  @media (max-width:620px){.gauges{grid-template-columns:1fr}}
+  .ga{background:var(--panel);border:1px solid var(--bd2);border-radius:9px;padding:14px 16px}
+  .ga.dim{opacity:.62;border-color:#161C27}
+  .ga .r1{display:flex;justify-content:space-between;align-items:baseline}
+  .ga .nm{font-size:11.5px;color:var(--s2)} .ga .mt{font-family:var(--mono);font-size:11px;color:var(--s4)}
+  .ga .val{font-family:var(--mono);font-size:24px;font-weight:600;margin:7px 0 2px}
+  .ga .bar{height:4px;background:#1A2130;border-radius:2px;overflow:hidden;margin:8px 0 7px}
+  .ga .bar i{display:block;height:100%}
+  .ga .cap{font-family:var(--mono);font-size:11px;color:var(--s3)}
+
+  /* идеи */
+  .ideas{display:flex;flex-direction:column;min-height:0}
+  .ih{display:flex;align-items:baseline;gap:12px;margin-bottom:12px}
+  .ih h2{margin:0;font-size:13px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--s2)}
+  .ih .m{font-family:var(--mono);font-size:12px;color:var(--s4)}
+  .idea{display:grid;align-items:center;column-gap:16px;row-gap:12px;
+    grid-template-columns:84px minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,126px) minmax(0,180px);
+    grid-template-areas:"sym entry stop target risk action";
+    border:1px solid var(--bd2);background:var(--panel);border-radius:10px;padding:16px 24px}
+  .idea.warn{border-color:#2B2316;background:#100E0A}
+  .ga-sym{grid-area:sym}.ga-en{grid-area:entry}.ga-st{grid-area:stop}.ga-tg{grid-area:target}.ga-rk{grid-area:risk}.ga-ac{grid-area:action}
+  .idea .sym .s{font-size:17px;font-weight:700} .idea .sym .wld{color:#C9D2DF}
+  .side{display:inline-block;margin-top:5px;font:600 10px var(--mono);letter-spacing:.08em;padding:3px 8px;border-radius:4px;background:#16311F;color:var(--green)}
+  .cell{min-width:0;font-family:var(--mono)}
+  .cell .k{font-size:10.5px;color:var(--s3);letter-spacing:.05em} .cell .v{font-size:15px;font-weight:600;margin-top:3px}
+  .cell .v.red{color:var(--red2)} .cell .v.grn{color:var(--green)}
+  .risk{text-align:right;font-family:var(--mono);min-width:0}
+  .risk .k{font-size:10.5px;color:var(--s3)} .risk .v{font-size:17px;font-weight:600;margin-top:2px} .risk .rr{font-size:10.5px;color:var(--s3);margin-top:2px}
+  .act{display:flex;flex-direction:column;gap:7px;align-items:stretch;min-width:0}
+  .act .map{font-size:11.5px;line-height:1.35;text-align:right}
+  .act .map.ok{color:var(--green2)} .act .map.norm{color:#9CA8BA} .act .map.warn{color:var(--amber2)}
+  @media (max-width:880px){
+    .idea{grid-template-columns:1fr 1fr 1fr;grid-template-areas:"sym sym sym" "entry stop target" "risk action action"}
+    .risk{text-align:left} .act .map{text-align:left}
+  }
+  @media (max-width:480px){
+    .idea{grid-template-columns:1fr 1fr;grid-template-areas:"sym sym" "entry stop" "target target" "risk risk" "action action"}
+  }
+  .lockbtn{font:600 11.5px var(--sans);padding:9px 14px;border-radius:7px;background:#1B2436;color:var(--s2);
+    display:flex;justify-content:center;align-items:center;gap:7px;cursor:default;width:100%}
+  .lockbtn svg{width:12px;height:12px}
+  .drop{margin-top:14px;font-family:var(--mono);font-size:11.5px;color:var(--s4)}
+
+  /* правый рельс */
+  .aside{flex:1 1 300px;min-width:0;max-width:340px;border-left:1px solid var(--bd);background:var(--right);
+    padding:20px 20px 24px;display:flex;flex-direction:column;gap:20px}
+  @media (max-width:980px){.aside{max-width:none;border-left:0;border-top:1px solid var(--bd)}}
+  .aside h2{margin:0 0 12px;font-size:11.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--s2)}
+  .kv{display:flex;flex-direction:column;gap:10px;font-family:var(--mono);font-size:12.5px}
+  .kv .r{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap} .kv .r span:first-child{color:var(--s2)}
+  .kv .r span:last-child{text-align:right}
+  .feed{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:11px}
+  .feed li{display:flex;gap:10px;font-size:12.5px;line-height:1.45}
+  .feed .tm{font-family:var(--mono);color:var(--s4);flex:0 0 38px}
+  .feed .tx{color:#BCC6D4} .feed .tx b{color:var(--fg)} .feed .grn{color:var(--green2)} .feed .amb{color:var(--amber2)}
+  .disc{margin-top:auto;border:1px solid #2B2316;background:#100E0A;border-radius:10px;padding:15px 16px}
+  .disc .l{font-size:11.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#C98F4A;margin-bottom:9px}
+  .disc .big{display:flex;align-items:baseline;gap:9px}
+  .disc .big .n{font-family:var(--mono);font-size:27px;font-weight:600}
+  .disc .big .t{font-size:12.5px;color:var(--s1);line-height:1.4}
+  .disc .note{margin-top:10px;padding-top:10px;border-top:1px solid #241E13;font-size:11.5px;line-height:1.5;color:var(--s2)}
+  .disc .note .red{color:var(--red2);font-family:var(--mono)} .disc .note .amb{color:var(--amber2)}
+
+  /* планшет/телефон: отступы и размеры */
+  @media (max-width:680px){
+    .hd{height:auto;min-height:52px;flex-wrap:wrap;gap:8px 12px;padding:11px 16px}
+    .hd .ea{margin-left:0}
+    .body{padding:16px}
+    .verdict{padding:18px 16px}
+    .vmain h1{font-size:26px}
+    .vcount{position:absolute;top:18px;right:16px}
+    .aside{padding:18px 16px}
+  }
+  /* мобильный рельс */
+  @media (max-width:560px){
+    .rail{width:100%;flex:0 0 auto;flex-direction:row;border-right:0;border-bottom:1px solid var(--bd);
+      overflow-x:auto;padding:10px 12px;gap:6px;align-items:center}
+    .mk{margin-bottom:0;margin-right:6px} .tab{flex:0 0 auto;width:auto;flex-direction:row;padding:8px 11px}
+    .tab .lk{position:static} .railftr{display:none}
+    .move{gap:10px} .move .tf{min-width:0}
+  }
+</style>
+
+<div class="shell">
+  <nav class="rail" aria-label="Разделы">
+    <div class="mk"><i></i></div>
+    <div class="tab on"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg><span>Повестка</span></div>
+    <div class="tab lock"><svg class="lk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/></svg><span>Стол</span></div>
+    <div class="tab lock"><svg class="lk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18l-7 8.5V19l-4 2v-8.5z"/></svg><span>Фильтр</span></div>
+    <div class="tab lock"><svg class="lk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="1"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1"/></svg><span>Монитор</span></div>
+    <div class="tab lock"><svg class="lk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9c2.2-3 4.4-3 6.6 0s4.4 3 6.6 0 4.6-3 6.8 0"/><path d="M2 16c2.2-3 4.4-3 6.6 0s4.4 3 6.6 0 4.6-3 6.8 0"/></svg><span>Волны</span></div>
+    <div class="tab lock"><svg class="lk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4M9 13h.01M15 13h.01"/></svg><span>Бот</span></div>
+    <div class="railftr">free<br>·</div>
+  </nav>
+
+  <div class="col">
+    <header class="hd">
+      <span class="nm">METATRON</span>
+      <span class="dt">11.09 · 04:12 UTC</span>
+      <span class="demo">демо · пример</span>
+      <span class="ea">Ранний доступ</span>
+    </header>
+
+    <main class="body">
+      <section class="verdict">
+        <div class="vtop">
+          <div class="vdot"></div>
+          <div class="vmain">
+            <h1>Сегодня — скорее нет</h1>
+            <p class="sub">Ни один прибор не говорит «да»: падение слабое, для шорта ещё рано.
+              Если всё-таки входишь — <b>половина обычного размера</b>.</p>
+            <div class="pulse">
+              <span class="pchip">Рынок — <b>спокойно</b></span>
+              <span class="pchip">Ликвидации за час: шортов больше — <b>$95k</b> против $26k лонгов</span>
+            </div>
+            <div class="move">
+              <span class="mv"><span class="tf">15 мин</span><span class="dn">↓0%</span><span class="up">↑1%</span></span>
+              <span class="sep">·</span>
+              <span class="mv"><span class="tf">2 часа</span><span class="dn">↓0%</span><span class="up">↑3%</span></span>
+              <span class="sep">·</span>
+              <span class="mv"><span class="tf">6 часов</span><span class="dn">↓2%</span><span class="up">↑43%</span></span>
+            </div>
+            <p class="measured"><span class="mi">◆ замерено</span>Шорт в начале слива <b>4 года из 4</b> оказывался хуже обычного часа — поэтому «скорее нет».</p>
+          </div>
+          <div class="vcount"><div class="l">дней подряд</div><div class="n">3</div></div>
+        </div>
+        <div class="gauges">
+          <div class="ga">
+            <div class="r1"><span class="nm">Падают разом</span><span class="mt">обвал — от 15%</span></div>
+            <div class="val" style="color:var(--red)">1.9%</div>
+            <div class="bar"><i style="width:13%;background:var(--red)"></i></div>
+            <div class="cap">4 монеты из 210 · обвала нет</div>
+          </div>
+          <div class="ga">
+            <div class="r1"><span class="nm">Рынок за 30 дней</span><span class="mt">437 монет</span></div>
+            <div class="val">+8.03%</div>
+            <div class="bar"><i style="width:80%;background:var(--amber)"></i></div>
+            <div class="cap" style="color:var(--amber2)">растёт — для шорта рано</div>
+          </div>
+          <div class="ga dim">
+            <div class="r1"><span class="nm">Фаза рынка</span><span class="mt">справочно</span></div>
+            <div class="val" style="color:var(--s1)">пока неясно</div>
+            <div class="bar"></div>
+            <div class="cap">точным прибором не измеряли</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="ideas">
+        <div class="ih"><h2>Если всё-таки смотришь</h2><span class="m">3 из 15 прошли проверку — совпадения, издержки, оборот</span></div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <article class="idea">
+            <div class="sym ga-sym"><div class="s">SUI</div><span class="side">ЛОНГ</span></div>
+            <div class="cell ga-en"><div class="k">ВХОД</div><div class="v">0.7320</div></div>
+            <div class="cell ga-st"><div class="k">СТОП −4.93%</div><div class="v red">0.6959</div></div>
+            <div class="cell ga-tg"><div class="k">ЦЕЛЬ +30.4%</div><div class="v grn">0.9546</div></div>
+            <div class="risk ga-rk"><div class="k">РИСК ПРИ ×15</div><div class="v">$74</div><div class="rr">на $1 риска — $6.2 цели</div></div>
+            <div class="act ga-ac"><div class="map norm">похожие случаи: как обычно</div>
+              <span class="lockbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>На стол · по подписке</span></div>
+          </article>
+
+          <article class="idea">
+            <div class="sym ga-sym"><div class="s">LTC</div><span class="side">ЛОНГ</span></div>
+            <div class="cell ga-en"><div class="k">ВХОД</div><div class="v">88.14</div></div>
+            <div class="cell ga-st"><div class="k">СТОП −6.10%</div><div class="v red">82.76</div></div>
+            <div class="cell ga-tg"><div class="k">ЦЕЛЬ +8.54%</div><div class="v grn">95.67</div></div>
+            <div class="risk ga-rk"><div class="k">РИСК ПРИ ×12</div><div class="v">$73</div><div class="rr">на $1 риска — $1.4 цели</div></div>
+            <div class="act ga-ac"><div class="map ok">✓ похожие случаи: лучше обычного</div>
+              <span class="lockbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>На стол · по подписке</span></div>
+          </article>
+
+          <article class="idea warn">
+            <div class="sym ga-sym"><div class="s wld">WLD</div><span class="side">ЛОНГ</span></div>
+            <div class="cell ga-en"><div class="k">ВХОД</div><div class="v">0.4003</div></div>
+            <div class="cell ga-st"><div class="k">СТОП −12.08%</div><div class="v red">0.3519</div></div>
+            <div class="cell ga-tg"><div class="k">ЦЕЛЬ +26.3%</div><div class="v grn">0.5056</div></div>
+            <div class="risk ga-rk"><div class="k">РИСК ПРИ ×7</div><div class="v">$84</div><div class="rr">на $1 риска — $2.2 цели</div></div>
+            <div class="act ga-ac"><div class="map warn">⚠ импульс 4ч вниз — поэтому в конце</div>
+              <span class="lockbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>На стол · по подписке</span></div>
+          </article>
+        </div>
+        <div class="drop">отсеяно 12: малый оборот — 7 · без подтверждения — 3 · цель ближе стопа — 1 · рано для шорта — 1</div>
+      </section>
+    </main>
+  </div>
+
+  <aside class="aside">
+    <div>
+      <h2>Бот сейчас</h2>
+      <div class="kv">
+        <div class="r"><span>риск в открытых сделках</span><span>≤ 15%</span></div>
+        <div class="r"><span>риск на сделку</span><span>0.5%</span></div>
+        <div class="r"><span>дневной лимит</span><span style="color:var(--s2)">снят 08.10</span></div>
+        <div class="r"><span>в работе</span><span>волны · импульс · слом · радар</span></div>
+      </div>
+    </div>
+    <div>
+      <h2>Последнее</h2>
+      <ul class="feed">
+        <li><span class="tm">03:48</span><span class="tx">закрыл <b>ETHFI</b> по цели <span class="grn">+1.24%</span></span></li>
+        <li><span class="tm">03:30</span><span class="tx">режим сменился — <span class="amb">для шорта не время</span></span></li>
+        <li><span class="tm">02:11</span><span class="tx">убрал <b>SKR</b> — настройка себя не доказала</span></li>
+      </ul>
+    </div>
+    <div class="disc">
+      <div class="l">Дисциплина</div>
+      <div class="big"><span class="n">3</span><span class="t">входа против карты<br>за 30 дней</span></div>
+      <div class="note">Их итог: <span class="red">−$212</span> — <span class="amb">пример, журнал ещё не ведётся</span>.
+        План: сделки ключом только на чтение + снимок карточки в минуту входа; мера — доли прибылей и убытков.</div>
+    </div>
+  </aside>
+</div>
+
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+</body>
+</html>
