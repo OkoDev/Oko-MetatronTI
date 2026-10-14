@@ -86,6 +86,7 @@ class SphereEvent:
 
     # Сфера 12 — Self-Diagnostics
     SPHERE_HEALTH      = "sphere_health"        # {sphere_id, status, last_update}
+    SATELLITE_SMOKE    = "satellite_smoke"      # {total, ok, failed, stale, red_list, mode, ts} — дымовой тест pm2 (ARCH-148.6)
 
     # ── Внешние сферы (ADR-003 шаг 4): факты процессов вне бота ──
     # 🔑 РЫНОЧНОЕ событие, пары у него нет → публикуется с symbol="*MARKET*".
