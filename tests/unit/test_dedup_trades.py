@@ -1,8 +1,11 @@
 """
 Тесты dedup открытых позиций (ARCH-11 TODO).
 
-Проверяем что register_trade() блокирует новую сделку если по символу
-уже есть открытая — независимо от направления.
+🔴 14.10 (ARCH-148.7): dedup теперь блокирует только ТУ ЖЕ сторону по символу
+(trade_simulator.py:382 `direction=?`, комментарий «уже только same direction»);
+противоположную сторону код ДОПУСКАЕТ (hedge). Старый текст «независимо от направления»
+устарел. Тесты про противоположную сторону проходили ложно — из-за гейта min SL distance
+(2% < 4%, DEV-157/164), а не из-за dedup. Исправлена и геометрия (стоп ≥5%), и смысл.
 """
 from __future__ import annotations
 
@@ -22,8 +25,8 @@ def _make_recommendation(
     symbol: str = "BTCUSDT",
     direction: str = "LONG",
     entry: float = 50_000.0,
-    sl: float = 49_000.0,
-    tp: float = 53_000.0,
+    sl: float = 47_500.0,   # 5% — выше гейта min SL distance 4% (DEV-157/164); 2% отклонялся
+    tp: float = 57_500.0,   # RR 3 (15% цель / 5% стоп)
 ) -> Any:
     """Минимальная заглушка TradingRecommendation."""
     from core.signals.signal_models import SignalDirection
@@ -74,14 +77,14 @@ def sim(tmp_path):
 
 # ── тесты ────────────────────────────────────────────────────────────────────
 
-def test_dedup_blocks_opposite_direction(sim):
-    """[01] LONG открыт → SHORT для той же пары блокируется."""
+def test_dedup_allows_opposite_direction(sim):
+    """[01] LONG открыт → SHORT для той же пары ДОПУСКАЕТСЯ (hedge; dedup только same-direction)."""
     _insert_open(sim.db_path, "BTCUSDT", "LONG")
 
-    rec = _make_recommendation("BTCUSDT", "SHORT", sl=51_000.0, tp=47_000.0)
+    rec = _make_recommendation("BTCUSDT", "SHORT", sl=52_500.0, tp=42_500.0)  # валидная геометрия (5% стоп)
     result = sim.register_trade(rec)
 
-    assert result is None, "SHORT должен быть заблокирован — открыт LONG"
+    assert result is not None, "SHORT при открытом LONG должен проходить — dedup блокирует только ту же сторону"
 
 
 def test_dedup_blocks_same_direction(sim):
@@ -109,7 +112,7 @@ def test_dedup_allows_after_close(sim):
     trade_id = _insert_open(sim.db_path, "BTCUSDT", "LONG")
     sim.close_trade(trade_id, "TP", 53_000.0)
 
-    rec = _make_recommendation("BTCUSDT", "SHORT", sl=51_000.0, tp=47_000.0)
+    rec = _make_recommendation("BTCUSDT", "SHORT", sl=52_500.0, tp=42_500.0)  # SHORT 5% стоп, RR 3
     result = sim.register_trade(rec)
 
     assert result is not None, "После закрытия должна пройти новая сделка"
@@ -123,14 +126,14 @@ def test_dedup_first_trade_registers(sim):
     assert result is not None, "Первая сделка должна зарегистрироваться"
 
 
-def test_dedup_short_blocks_long(sim):
-    """[06] SHORT открыт → LONG блокируется."""
+def test_dedup_short_blocks_second_short(sim):
+    """[06] SHORT открыт → второй SHORT блокируется (та же сторона)."""
     _insert_open(sim.db_path, "SOLUSDT", "SHORT")
 
-    rec = _make_recommendation("SOLUSDT", "LONG", sl=89_000.0, tp=105_000.0)
+    rec = _make_recommendation("SOLUSDT", "SHORT", entry=100.0, sl=105.0, tp=85.0)  # SHORT 5% стоп, RR 3
     result = sim.register_trade(rec)
 
-    assert result is None, "LONG должен быть заблокирован — открыт SHORT"
+    assert result is None, "Дублирующий SHORT должен быть заблокирован — открыт SHORT"
 
 
 def test_dedup_multiple_symbols_independent(sim):
@@ -143,10 +146,11 @@ def test_dedup_multiple_symbols_independent(sim):
                                    entry=0.5, sl=0.48, tp=0.56)
     assert sim.register_trade(rec_xrp) is not None
 
-    # Существующие символы блокируются
-    rec_btc = _make_recommendation("BTCUSDT", "SHORT", sl=51_000.0, tp=47_000.0)
+    # Существующие символы блокируются ТОЙ ЖЕ стороной (dedup теперь same-direction, trade_sim.py:382;
+    # противоположную сторону код допускает — hedge). Геометрия выше SL-гейта 4%, чтобы None был от dedup.
+    rec_btc = _make_recommendation("BTCUSDT", "LONG")  # открыт BTCUSDT LONG → второй LONG блокируется
     assert sim.register_trade(rec_btc) is None
 
-    rec_eth = _make_recommendation("ETHUSDT", "LONG",
-                                   entry=3_000.0, sl=2_900.0, tp=3_300.0)
+    rec_eth = _make_recommendation("ETHUSDT", "SHORT",  # открыт ETHUSDT SHORT → второй SHORT блокируется
+                                   entry=3_000.0, sl=3_150.0, tp=2_550.0)
     assert sim.register_trade(rec_eth) is None

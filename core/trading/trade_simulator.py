@@ -252,6 +252,14 @@ class TradeSimulator:
                 ("magnet_tp_rr", "REAL"),         # ARCH-122 P2 shadow: RR магнита от entry
                 ("magnet_tp_src", "TEXT"),        # ARCH-122 P2 shadow: метка кластера (ob+eqh+fvg@price)
                 ("regime_v2", "TEXT"),            # ARCH-124 shadow: HTF-доминантная метка режима (vs regime v1)
+                # ARCH-148.7: эти 5 пишет INSERT register_trade / UPDATE close_trade ниже, но в этом
+                # (запасном) CREATE их не было — в бою таблицу заводит subscription_manager, а на свежей БД
+                # (тесты dedup) INSERT падал «no such column». Типы — из канона core/db/subscription_manager.py.
+                ("source_router", "TEXT"),
+                ("account_id", "INTEGER DEFAULT 1"),
+                ("execution_mode", "TEXT DEFAULT 'SIM'"),
+                ("exchange", "TEXT DEFAULT 'bingx'"),
+                ("total_fee", "REAL DEFAULT 0"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
