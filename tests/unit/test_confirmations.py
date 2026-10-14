@@ -19,16 +19,16 @@ from core.confirmations import (
 # ---------------------------------------------------------------------------
 
 class TestRegistryStructure:
-    def test_total_count(self):
-        """Ровно 28 типов confirmations (DEV-200: +wt_extreme, +smc_bos_4h/15m)."""
-        assert len(CONFIRMATION_WEIGHTS) == 28
+    def test_registry_not_empty(self):
+        """Реестр непустой. Жёсткое число (было ==28) убрано 14.10: реестр вырос до ~288, и тест ломался
+        на каждом добавлении признака — хрупкий по определению. Проверяем свойство, а не точный размер."""
+        assert len(CONFIRMATION_WEIGHTS) > 20
 
-    def test_all_entries_have_required_keys(self):
-        """Каждая запись содержит LONG, SHORT, is_trigger."""
+    def test_all_entries_have_long_and_short(self):
+        """Каждая запись задаёт вес для LONG и SHORT. Ключ `is_trigger` убран из структуры — не требуем его."""
         for source, entry in CONFIRMATION_WEIGHTS.items():
             assert 'LONG' in entry, f"{source}: нет ключа LONG"
             assert 'SHORT' in entry, f"{source}: нет ключа SHORT"
-            assert 'is_trigger' in entry, f"{source}: нет ключа is_trigger"
 
     def test_weights_are_ints(self):
         """Все веса — целые числа."""
