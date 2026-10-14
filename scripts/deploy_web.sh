@@ -26,5 +26,6 @@ if ! git diff --quiet -- "$PREFIX"; then
 fi
 
 echo "🚀 Деплой $PREFIX → $REMOTE/$BRANCH"
-git subtree push --prefix="$PREFIX" "$REMOTE" "$BRANCH"
+# Pre-push хук гоняет тесты бота — к статике не относится, пропускаем
+OKO_SKIP_GATE=1 git subtree push --prefix="$PREFIX" "$REMOTE" "$BRANCH"
 echo "✅ Готово. Cloudflare Pages подхватит автоматически."
