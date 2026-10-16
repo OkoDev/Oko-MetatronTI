@@ -255,30 +255,57 @@ def _plan_trade(r, of=None):
             "side": "BUY" if long_ else "SELL"}
 
 
+_PER_RU = {"D": "дня", "W": "недели", "M": "месяца"}
+
+
+def _hum_hit(tag):
+    """Тег схождения скринера → человеческий. В oko_sm_watch эти имена — ключи весов, там не трогаем."""
+    name, sep, rest = tag.partition("(")
+    if name.startswith("сосед-fib"):
+        h = f"фибо {name[9:]} встречного импульса"
+    elif name == "FVG":
+        h = "имбаланс"
+    elif name == "полка":
+        h = "уровень-полка"
+    elif len(name) > 2 and name[1] == "-" and name[0] in _PER_RU:
+        per, lv = _PER_RU[name[0]], name[2:]
+        h = (f"уровень {per}" if lv == "PP" else f"поддержка {lv} {per}" if lv[:1] == "S"
+             else f"сопротивление {lv} {per}" if lv[:1] == "R" else f"{lv} {per}")
+    else:
+        h = name
+    return h + sep + rest
+
+
+def _hum_div(t):
+    """R+/R−/H+/H− → «регулярная/скрытая бычья/медвежья»."""
+    kind = {"R": "регулярная", "H": "скрытая"}.get(t[:1], t[:1])
+    return f"{kind} {'бычья' if '+' in t else 'медвежья'}"
+
+
 def _why(r):        # причины — только проверяемые, порядок = по силе довода
     """Почему монета в списке — только проверяемые причины, без «сильный сигнал»."""
     w = []
     if (r.get("cluster") or 0) >= 2:
-        w.append(f"кластер ×{r['cluster']}")
+        w.append(f"кластер ×{r['cluster']} монет")
     if r.get("in_zone"):
-        w.append("в зоне отката")
+        w.append("в зоне интереса после отката")
     elif r.get("approach"):
-        w.append("подходит к зоне")
+        w.append("подходит к зоне интереса")
     hits = []
     try:
         hits = json.loads(r.get("hits") or "[]")
     except Exception:
         pass
     if hits:
-        w.append(hits[0].split("(")[0])         # ближайшее схождение
+        w.append(_hum_hit(hits[0].split("(")[0]))         # ближайшее схождение
     c = r.get("_cross")
     if c and c.get("dir"):
         side_ok = (c["dir"] > 0) == (r.get("trend") == "long")
         if side_ok:
-            zn = f" из {c['zone']}" if c.get("zone") in ("OS", "OB") else ""
+            zn = {"OS": " из перепроданности", "OB": " из перекупленности"}.get(c.get("zone"), "")
             w.append(f"кросс {'↑' if c['dir'] > 0 else '↓'}{c.get('age', '')}{zn}")
     if r.get("div_type") and (r.get("div_age") is not None) and r["div_age"] <= 5:
-        w.append(f"див {r['div_type']} {r['div_age']}б")
+        w.append(f"дивергенция {_hum_div(r['div_type'])} · {r['div_age']} бар.")
     t = r.get("res_touches") if r.get("trend") == "short" else r.get("sup_touches")
     if t and t >= 3:
         w.append(f"уровень ×{t}")
@@ -314,8 +341,10 @@ def _agenda():
         r["_cross"] = {"dir": cd, "age": ca, "zone": cz} if cd else None
         warn = None
         if cd and (cd > 0) != (side == "long"):
-            zn = f" из {cz}" if cz in ("OS", "OB") else ""
-            warn = f"WT развернулся {'вверх' if cd > 0 else 'вниз'}{zn} {ca} бар назад — против входа"
+            zn = {"OS": " из зоны перепроданности", "OB": " из зоны перекупленности"}.get(cz, "")
+            when = "только что" if not ca else f"{ca} бар. назад"
+            warn = (f"индикатор перепроданности 4ч развернулся {'вверх' if cd > 0 else 'вниз'}{zn} "
+                    f"{when} — против входа")
         item = {"sym": r["symbol"], "side": side, "score": r.get("conf_score") or 0,
                 "cluster": r["cluster"], "why": _why(r), "plan": plan, "warn": warn,
                 "turn": round((of or {}).get("turn", 0) / 1e6, 1) if of else None,
@@ -328,15 +357,15 @@ def _agenda():
         if age_h > 2:                                    # 08.10: строка скринера, которую никто не обновляет
             item["drop"] = f"данные скринера устарели ({age_h:.0f} ч)"
         elif side == "short" and drf and not drf["short_ok"]:
-            item["drop"] = f"шорт вне режима: дрейф 30д {drf['d30']:+.1f}% (гейт 15m-шорта)"
+            item["drop"] = f"для шорта нет условий: рынок за 30д {drf['d30']:+.1f}%"
         elif (r["cluster"] or 0) < 2:
-            item["drop"] = "одиночный сигнал (PF 0.67 против 2.24 у кластера)"
+            item["drop"] = "без поддержки других монет (PF 0.67 против 2.24 у кластера)"
         elif plan and plan["cost_of_stop"] > 25:
-            item["drop"] = f"косты съедят {plan['cost_of_stop']}% стопа"
+            item["drop"] = f"издержки съедят {plan['cost_of_stop']}% стопа"
         elif plan and plan["rr"] < 1.2:
             item["drop"] = f"RR {plan['rr']} — цель ближе стопа"
         elif item["turn"] is not None and item["turn"] < _MIN_TURN_M:
-            item["drop"] = f"оборот {item['turn']} млн — проскальзывание"
+            item["drop"] = f"объём торгов {item['turn']} млн — проскальзывание"
         if item.get("drop"):
             skipped.append(item)
         elif side == "long":
@@ -349,23 +378,29 @@ def _agenda():
     shorts.sort(key=lambda x: (bool(x["warn"]), -(x["cluster"]), -(x["score"])))
     # ── режим дня и светофор ──
     # 11.09: режим — по ИЗМЕРЕННЫМ приборам (ширина + дрейф вселенной), а не по фазе
+    # mode_code — стабильный ключ для логики (дедуп TG в market_pulse), mode — текст для людей
     wide = brd["wide"]
     if wide:
-        mode = "ШИРОКОЕ ПАДЕНИЕ — отскок в силе"
-        hint = "берём отскок падений; тренд-вход второстепенен"
+        mode_code = "wide"
+        mode = "МАССОВОЕ ПАДЕНИЕ — отскок вероятен"
+        hint = "берём отскок после падения; вход по тренду второстепенен"
     elif drf is None:
-        mode = "РЕЖИМ НЕИЗВЕСТЕН"
-        hint = "нет свежего дрейфа вселенной — наполнитель не отработал; работать как в слабый день"
+        mode_code = "unknown"
+        mode = "РЕЖИМ НЕ ОПРЕДЕЛЁН"
+        hint = "нет свежих данных о движении рынка за 30 дней — работать как в слабый день"
     elif drf["short_ok"]:
-        mode = "РЫНОК ВЫРОС ЗА МЕСЯЦ — шорт в режиме"
-        hint = f"дрейф 30д {drf['d30']:+.1f}% и растёт — по замеру лучший режим для шорта"
+        mode_code = "short_ok"
+        mode = "РЫНОК ВЫРОС ЗА МЕСЯЦ — для шорта есть условия"
+        hint = f"рынок за 30д {drf['d30']:+.1f}% и растёт — по замеру лучшие условия для шорта"
     elif drf["d30"] <= -30:
+        mode_code = "fell"
         mode = "РЫНОК УЖЕ УПАЛ — шортить поздно"
-        hint = f"дрейф 30д {drf['d30']:+.1f}% — по замеру худший режим для шорта"
+        hint = f"рынок за 30д {drf['d30']:+.1f}% — по замеру худшие условия для шорта"
     else:
-        mode = "СПОКОЙНЫЙ РЫНОК — режим не подтверждён"
-        hint = (f"дрейф 30д {drf['d30']:+.1f}%: шорт вне режима, "
-                f"для лонга измеренного прибора режима нет — размер меньше обычного")
+        mode_code = "calm"
+        mode = "СПОКОЙНЫЙ РЫНОК — условия не подтверждены"
+        hint = (f"рынок за 30д {drf['d30']:+.1f}%: для шорта нет условий, "
+                f"для лонга нет измеренного прибора — размер меньше обычного")
     n = len(longs) + len(shorts)
     # 🔴 11.09: светофор по РЕЖИМУ, а не по числу строк. Раньше 15 найденных строк давали
     # «зелёный» при фазе UNCLEAR и узкой ширине — то есть в слабый по обоим признакам день.
@@ -379,18 +414,18 @@ def _agenda():
     elif n_ok == 0:
         parts = []
         if longs:
-            parts.append(f"лонгов {len(longs)} — режима лонга нет (ширина падения {brd['share_pct']}% "
+            parts.append(f"лонгов {len(longs)} — для лонга нет условий (массовое падение {brd['share_pct']}% "
                          f"при пороге {brd['share_hi_pct']}%, другого измеренного прибора нет)")
         if shorts:
-            parts.append(f"шортов {len(shorts)} — " + (f"шорт вне режима (дрейф 30д {drf['d30']:+.1f}%)"
-                                                       if drf else "дрейф вселенной неизвестен"))
+            parts.append(f"шортов {len(shorts)} — " + (f"для шорта нет условий (рынок за 30д {drf['d30']:+.1f}%)"
+                                                       if drf else "движение рынка за 30 дней неизвестно"))
         light, reason = "yellow", "; ".join(parts) + " — выборочно и половиной размера"
     elif n_ok <= 2:
-        light, reason = "yellow", f"в подтверждённом режиме кандидатов мало ({n_ok}) — выборочно, размером меньше"
+        light, reason = "yellow", f"при подтверждённых условиях кандидатов мало ({n_ok}) — выборочно, размером меньше"
     else:
-        light, reason = "green", f"{n_ok} кандидатов в подтверждённом для их стороны режиме прошли кластер и косты"
+        light, reason = "green", f"{n_ok} кандидатов при подтверждённых для их стороны условиях прошли кластер и издержки"
     ts_data = max((int(r.get("ts") or 0) for r in rows), default=0)
-    return {"phase": phase, "mode": mode, "hint": hint, "breadth": brd, "pulse": _pulse_block(),
+    return {"phase": phase, "mode_code": mode_code, "mode": mode, "hint": hint, "breadth": brd, "pulse": _pulse_block(),
             "light": light, "reason": reason, "n_long": len(longs), "n_short": len(shorts),
             "drift": drf, "long_ok": long_ok, "short_ok": short_ok, "ts_data": ts_data,
             "long": longs[:_AGENDA_TOP], "short": shorts[:_AGENDA_TOP],
@@ -2245,6 +2280,11 @@ __NAV__
   <div class=upd id=upd></div>
 </div>
 <script>
+// перевод только ОТОБРАЖЕНИЯ: сами значения — ключи логики (цвет, сравнения), их не трогаем. Канон: docs/product/glossary.json
+var PHASE_RU={TREND_UP:'восходящая',TREND_DOWN:'нисходящая',RANGE:'флэт',UNCLEAR:'пока не ясна',
+ MARKUP_UP:'разгон вверх',REVERSAL_BREWING:'назревает разворот'};
+var PULSE_RU={'НОРМА':'СПОКОЙНО','ВЫНОС':'РЕЗКИЙ РОСТ'};
+var WIN_RU={'15m':'15м','2h':'2ч','6h':'6ч'};
 function card(x){
  var p=x.plan||{};
  var why=(x.why||[]).map(function(w){
@@ -2254,7 +2294,7 @@ function card(x){
  var q='/monitor?sym='+x.sym+'&side='+p.side+'&entry='+p.entry+'&sl='+p.sl+'&tp='+p.tp;
  return '<div class="card '+x.side+'">'+
   '<div class=hd><span class=sym>'+x.sym+'</span>'+
-   '<span class="sd '+x.side+'">'+(x.side=='long'?'LONG':'SHORT')+'</span>'+
+   '<span class="sd '+x.side+'">'+(x.side=='long'?'ЛОНГ':'ШОРТ')+'</span>'+
    '<span class=sc>score '+(x.score||0).toFixed(1)+'</span></div>'+
   '<div class=why>'+why+'</div>'+
   (x.warn?('<div style="color:var(--o);font-size:12px;margin:-2px 0 6px">⚠ '+x.warn+' · поэтому карточка ниже остальных</div>'):'')+
@@ -2267,12 +2307,12 @@ function card(x){
   '</div>'+
   '<div class=meta><span>RR <b>'+p.rr+'</b></span>'+
    (p.max_lev?('<span title="при большем плече ликвидация окажется ближе стопа — вынесет раньше защиты">плечо ≤ <b>x'+p.max_lev+'</b></span>'):'')+
-   '<span class="'+(costWarn?'warn':'')+'">косты <b>'+p.cost_of_stop+'%</b> от стопа</span>'+
-   (x.turn!=null?('<span>оборот <b>'+x.turn+'</b> млн</span>'):'')+
+   '<span class="'+(costWarn?'warn':'')+'">издержки <b>'+p.cost_of_stop+'%</b> от стопа</span>'+
+   (x.turn!=null?('<span>объём торгов <b>'+x.turn+'</b> млн</span>'):'')+
    (x.spread!=null?('<span>спред <b>'+x.spread+'%</b></span>'):'')+'</div>'+
   '<div class=act><a class="btn pri" href="'+q+'" target=_blank>→ на график с планом</a>'+
    '<a class=btn href="/situation?sym='+x.sym+'" target=_blank title="состояние сфер и базовые частоты похожих часов">Карта</a>'+
-   '<a class=btn href="https://ru.tradingview.com/chart/?symbol=BINGX%3A'+x.sym+'USDT.P&interval=240" target=_blank>TW</a></div>'+
+   '<a class=btn href="https://ru.tradingview.com/chart/?symbol=BINGX%3A'+x.sym+'USDT.P&interval=240" target=_blank>TradingView</a></div>'+
  '</div>';
 }
 // СИТУАЦИОННАЯ КАРТА у каждого кандидата (08.10): стоп-кран для его стороны + базовая частота похожих
@@ -2281,9 +2321,9 @@ var SITC={},SITQ=[],SITBUSY=false;
 function sitLine(c,side){
  if(!c||c.error)return '<span class=dim>карта: '+((c&&c.error)||'нет ответа')+'</span>';
  // 09.10: уровни situation_card._stop_level — better/same/warn/stop; ключей better/same не было → «undefined»
- var m={better:'✅ лучше обычного (не сигнал)',same:'➖ как обычно',warn:'⚠️ хуже обычного',stop:'⛔ стабильно хуже обычного'};
+ var m={better:'✅ в похожих ситуациях лучше среднего (не сигнал)',same:'➖ в похожих ситуациях — как в среднем',warn:'⚠️ в похожих ситуациях хуже среднего',stop:'⛔ в похожих ситуациях стабильно хуже среднего'};
  var s=c.stop&&c.stop.level?(m[c.stop.level]||''):'',r=c.rates,k=side=='BUY'?'long':'short';
- var t=(r&&r[k]&&r[k].mean!=null)?(' · похожих '+r.n_days+' дн.: '+(k=='long'?'лонг ':'шорт ')+((r[k].mean>0?'+':'')+r[k].mean.toFixed(2))+'% за 24ч после коста, в плюс '+Math.round((r[k].p_up||0)*100)+'%'):' · похожих часов нет';
+ var t=(r&&r[k]&&r[k].mean!=null)?(' · за '+r.n_days+' похожих дн.: '+(k=='long'?'лонг ':'шорт ')+((r[k].mean>0?'+':'')+r[k].mean.toFixed(2))+'% за 24ч после издержек, в плюс '+Math.round((r[k].p_up||0)*100)+'%'):' · похожих ситуаций нет';
  var v=(c.verdicts||[]).filter(function(h){return h.side==side;}).map(function(h){return h.status;}).join(' ');
  return '<span class="lvl-'+((c.stop&&c.stop.level)||'na')+'">'+s+'</span>'+t+(v?' · измерено: '+v:'');}
 async function sitPump(){
@@ -2301,11 +2341,11 @@ async function load(){
   var b=d.breadth||{};
   document.getElementById('mode').innerHTML=
    '<div><div class=big>'+d.mode+'</div><div class=hint>'+d.hint+'</div></div>'+
-   '<div class=brd title="монеты в растущем 4h-тренде, резко упавшие в перепроданность (WT ниже −60), уникальные за 24ч. Считаются только ликвидные: оборот от '+b.min_turn+' млн">ширина падения<b>'+
-    (b.day!=null?b.day:b.now)+' из '+b.universe+' · '+b.share_pct+'%</b>'+
+   '<div class=brd title="монеты в растущем 4ч-тренде, резко упавшие в перепроданность (индикатор перепроданности ниже −60), уникальные за 24ч. Считаются только ликвидные: объём торгов от '+b.min_turn+' млн">массовое падение<b>'+
+    (b.day!=null?b.day:b.now)+' из '+b.universe+' ликвидных · '+b.share_pct+'%</b>'+
     'порог '+b.share_hi_pct+'%'+
-    (d.drift?'<br>дрейф 30д '+(d.drift.d30>0?'+':'')+d.drift.d30+'% · шорт '+(d.drift.short_ok?'в режиме':'вне режима'):'')+
-    '<br><span style=opacity:.6 title="фаза phase_watch как режим не мерилась: ретро-тест 46 тыс. сделок — разделяет результат на +0.003 п.п.">фаза '+(d.phase||'—')+' · не мерилась</span>'+
+    (d.drift?'<br>рынок за 30д '+(d.drift.d30>0?'+':'')+d.drift.d30+'% · шорт: '+(d.drift.short_ok?'условия есть':'условий нет'):'')+
+    '<br><span style=opacity:.6 title="фаза рынка как условие не проверена: ретро-тест 46 тыс. сделок — разница +0.003 п.п.">фаза: '+(PHASE_RU[d.phase]||d.phase||'—')+' · справочно</span>'+
     (b.cover!=null&&b.cover<0.8?'<br><span style="color:var(--o)">окно неполное: '+b.cover_h+' ч из 24</span>':'')+'</div>';
   // 09.10 МАРКЕТ-ПУЛЬС: состояние рынка раз в минуту + ликвидации + только измеренные строки (светофор не трогает)
   var p=d.pulse||{},P=document.getElementById('pulse');
@@ -2313,11 +2353,11 @@ async function load(){
   else{
    var pc={'СЛИВ':'var(--dn)','ОБВАЛ':'var(--dn)','ВЫНОС':'var(--up)'}[p.state]||'var(--dim)';
    var wl=['15m','2h','6h'].filter(function(k){return p.win&&p.win[k];}).map(function(k){var x=p.win[k];
-    return k+': ↓'+x.dn+'% ↑'+x.up+'% мед '+(x.med>0?'+':'')+x.med+'%';}).join(' · ');
+    return WIN_RU[k]+': ↓'+x.dn+'% ↑'+x.up+'% медиана '+(x.med>0?'+':'')+x.med+'%';}).join(' · ');
    P.innerHTML='<div>'+(p.stale?'<b style="color:var(--o)">пульс молчит '+Math.round(p.age_sec/60)+' мин</b> · последнее: ':'')+
-    '<b style="color:'+pc+'">РЫНОК СЕЙЧАС: '+p.state+'</b>'+
+    '<b style="color:'+pc+'">РЫНОК СЕЙЧАС: '+(PULSE_RU[p.state]||p.state)+'</b>'+
     (p.state!='НОРМА'&&p.since_min!=null?' · '+p.since_min+' мин':'')+
-    ' <span class=dm>· доля монет за окно · '+wl+' · ликвидных '+p.n+'</span></div>'+
+    ' <span class=dm>· движения по окнам (доля монет ↓/↑ и медианный ход) · '+wl+' · ликвидных '+p.n+'</span></div>'+
     '<div class=dm>'+p.liq+((p.cascade||[]).length?' · <b style="color:var(--y)">'+p.cascade.join(', ')+'</b>':'')+'</div>'+
     (p.facts||[]).map(function(f){return '<div class=pf>• '+f+'</div>';}).join('');}
   var L=document.getElementById('light');

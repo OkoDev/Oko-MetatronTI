@@ -271,7 +271,8 @@ def fetch_agenda() -> dict | None:
     try:
         with urllib.request.urlopen(AGENDA_URL, timeout=60) as r:
             d = json.loads(r.read())
-        return {"mode": d.get("mode"), "light": d.get("light"), "reason": d.get("reason"), "ts": int(time.time()),
+        return {"mode": d.get("mode"), "mode_code": d.get("mode_code"), "light": d.get("light"),
+                "reason": d.get("reason"), "ts": int(time.time()),
                 "long": [x.get("sym") for x in d.get("long") or []], "short": [x.get("sym") for x in d.get("short") or []]}
     except Exception as e:                               # noqa: BLE001
         print(f"[pulse] повестка недоступна: {type(e).__name__} {e}", flush=True)
@@ -300,7 +301,10 @@ def agenda_step(prev: dict, m: dict, state: str, now: float) -> str | None:
     if not ag:
         return None
     prev["agenda"] = ag
-    key = f"{ag['mode']}|{ag['light']}"
+    key = f"{ag.get('mode_code') or ag['mode']}|{ag['light']}"   # код режима, не текст: правка слов ≠ смена режима
+    # до 16.10 ключом был текст режима — при переходе на код берём новую базу молча, без ложной «смены»
+    if key.split("|")[0].isascii() and not (prev.get("agenda_key") or "").split("|")[0].isascii():
+        prev["agenda_key"] = None
     if key == prev.get("agenda_cand"):
         prev["agenda_seen"] = prev.get("agenda_seen", 0) + 1
     else:

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """Снапшот повестки для публичного /moment (Фаза 1, 15.10.2026).
 
-Берёт живую повестку с приватного терминала :8010 (/api/agenda), переводит жаргон →
-человеческий через docs/product/glossary.json и пишет компактный agenda.json рядом с
-/moment. Публичного бэкенда нет: файл деплоится статикой на Cloudflare Pages, /moment
-читает его через fetch('./agenda.json'). Запуск по расписанию (cron/pm2) + деплой.
+Берёт живую повестку с приватного терминала :8010 (/api/agenda) — текст там уже на человеческом
+(канон docs/product/glossary.json, 16.10) — и пишет компактный agenda.json рядом с /moment.
+Здесь не переводим: только раскладка под вёрстку /moment и отображение ключей-кодов (состояние
+пульса, фаза). Публичного бэкенда нет: файл деплоится статикой, /moment читает fetch('./agenda.json').
 
     python scripts/moment_snapshot.py
 """
@@ -30,20 +30,6 @@ def _fetch() -> dict:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(AGENDA_URL, timeout=30) as r:
         return json.loads(r.read().decode("utf-8"))
-
-
-def _translate(text: str) -> str:
-    """Мягкая замена жаргонных слов на человеческие (по вхождению, без учёта регистра)."""
-    if not text:
-        return text
-    for frm, to in _G["phrases"]:
-        low = text.lower()
-        i = low.find(frm.lower())
-        while i >= 0:
-            text = text[:i] + to + text[i + len(frm):]
-            low = text.lower()
-            i = low.find(frm.lower(), i + len(to))
-    return text
 
 
 def _coins(n) -> str:
@@ -76,7 +62,7 @@ def _verdict(d: dict) -> dict:
     light = d.get("light") or "yellow"
     return {"light": light,
             "title": _G["verdict"].get(light, "Сегодня — выборочно"),
-            "sub": _translate(d.get("reason") or "")}
+            "sub": d.get("reason") or ""}
 
 
 def _pulse(d: dict) -> dict:
@@ -97,19 +83,19 @@ def _gauges(d: dict) -> dict:
     hi = brd.get("share_hi_pct") or 15
     wide = bool(brd.get("wide"))
     breadth = {
-        "label": "Падают разом", "meta": f"обвал — от {hi}%",
+        "label": "Массовое падение", "meta": f"обвал — от {hi}%",
         "val": f"{share}%", "pct": min(100, round(share / hi * 100)) if hi else 0,
         "color": "green" if wide else "red",
-        "cap": (f"{_coins(brd.get('day') or brd.get('now'))} из {brd.get('universe')} · "
+        "cap": (f"{_coins(brd.get('day') or brd.get('now'))} из {brd.get('universe')} ликвидных · "
                 + ("обвал идёт" if wide else "обвала нет"))}
 
     d30 = drf.get("d30")
     if d30 is None:
         drift = {"label": "Рынок за 30 дней", "meta": "нет данных", "val": "—",
-                 "pct": 0, "color": "s1", "cap": "дрейф вселенной неизвестен"}
+                 "pct": 0, "color": "s1", "cap": "движение рынка неизвестно"}
     else:
         if drf.get("short_ok"):
-            cap, color = "растёт — шорт в режиме", "green"
+            cap, color = "растёт — для шорта есть условия", "green"
         elif d30 <= -30:
             cap, color = "рынок упал — шортить поздно", "amber"
         elif d30 > 0:
@@ -120,7 +106,8 @@ def _gauges(d: dict) -> dict:
                  "val": f"{d30:+.1f}%", "pct": min(100, round(abs(d30) / 10 * 100)),
                  "color": color, "cap": cap}
 
-    phase = {"label": "Фаза рынка", "meta": "справочно", "val": "пока неясно",
+    ph = d.get("phase") or "UNCLEAR"
+    phase = {"label": "Фаза рынка", "meta": "справочно", "val": _G["regimes"].get(ph, ph),
              "pct": 0, "color": "s1", "cap": "точным прибором не измеряли", "dim": True}
     return {"breadth": breadth, "drift": drift, "phase": phase}
 
@@ -128,21 +115,10 @@ def _gauges(d: dict) -> dict:
 def _measured(d: dict):
     """Измеренная строка — ТОЛЬКО когда сторона подтверждена прибором. Иначе не выдумываем."""
     if bool((d.get("breadth") or {}).get("wide")):
-        return "Широкое падение 4 года из 4 давало отскок сильнее обычного часа — поэтому смотрим лонг."
+        return "Массовое падение 4 года из 4 давало отскок сильнее обычного часа — поэтому смотрим лонг."
     if bool((d.get("drift") or {}).get("short_ok")):
-        return "Шорт в начале роста 4 года из 4 оказывался лучше обычного часа — поэтому шорт в режиме."
+        return "Шорт в начале роста 4 года из 4 оказывался лучше обычного часа — поэтому для шорта есть условия."
     return None
-
-
-def _warn(raw: str):
-    if not raw:
-        return None
-    low = raw.lower()
-    if "вниз" in low:
-        return _G["warn"]["down_against"]
-    if "вверх" in low:
-        return _G["warn"]["up_against"]
-    return _translate(raw)
 
 
 def _ideas(d: dict) -> dict:
@@ -160,11 +136,11 @@ def _ideas(d: dict) -> dict:
             "stop": _fmt_price(p.get("sl")), "stop_pct": f"-{p.get('risk_pct')}%",
             "target": _fmt_price(p.get("tp")), "target_pct": f"+{p.get('rew_pct')}%",
             "lev": p.get("max_lev"), "rr": f"{p.get('rr')}",
-            "warn": _warn(it.get("warn") or "")})
+            "warn": it.get("warn") or None})
     n_pass = len(items)
     n_total = n_pass + len(d.get("skipped") or [])
     return {"title": "Если всё-таки смотришь",
-            "note": f"{n_pass} из {n_total} прошли проверку — совпадения, издержки, оборот",
+            "note": f"{n_pass} из {n_total} прошли проверку — кластер, издержки, объём торгов",
             "items": items}
 
 
@@ -209,6 +185,11 @@ def main() -> int:
     except Exception as e:
         print(f"[moment_snapshot] терминал :8010 недоступен: {e}", file=sys.stderr)
         return 1
+    # Холодный терминал (рестарт, лимит BingX 100410) отдаёт «0 из 0 ликвидных» и красный свет —
+    # это не рынок. Публичный снимок не перезаписываем: остаётся последний честный.
+    if not (raw.get("breadth") or {}).get("universe"):
+        print("[moment_snapshot] данные терминала холодные (0 ликвидных) — снимок не обновлён", file=sys.stderr)
+        return 2
     out = build(raw)
     OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     v = out["verdict"]
