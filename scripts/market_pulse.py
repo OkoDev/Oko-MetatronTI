@@ -271,7 +271,8 @@ def fetch_agenda() -> dict | None:
     try:
         with urllib.request.urlopen(AGENDA_URL, timeout=60) as r:
             d = json.loads(r.read())
-        return {"mode": d.get("mode"), "mode_code": d.get("mode_code"), "light": d.get("light"),
+        return {"mode": d.get("mode"), "mode_code": d.get("mode_code"), "data_ok": d.get("data_ok"),
+                "light": d.get("light"),
                 "reason": d.get("reason"), "ts": int(time.time()),
                 "long": [x.get("sym") for x in d.get("long") or []], "short": [x.get("sym") for x in d.get("short") or []]}
     except Exception as e:                               # noqa: BLE001
@@ -298,7 +299,7 @@ def agenda_text(ag: dict, m: dict, state: str) -> str:
 def agenda_step(prev: dict, m: dict, state: str, now: float) -> str | None:
     """Опрос повестки; → текст сообщения, если режим/светофор сменился устойчиво. Первый опрос — только база."""
     ag = fetch_agenda()
-    if not ag:
+    if not ag or ag.get("data_ok") is False:      # терминал без данных об объёме — это не смена режима
         return None
     prev["agenda"] = ag
     key = f"{ag.get('mode_code') or ag['mode']}|{ag['light']}"   # код режима, не текст: правка слов ≠ смена режима

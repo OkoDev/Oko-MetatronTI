@@ -187,8 +187,8 @@ def main() -> int:
         return 1
     # Холодный терминал (рестарт, лимит BingX 100410) отдаёт «0 из 0 ликвидных» и красный свет —
     # это не рынок. Публичный снимок не перезаписываем: остаётся последний честный.
-    if not (raw.get("breadth") or {}).get("universe"):
-        print("[moment_snapshot] данные терминала холодные (0 ликвидных) — снимок не обновлён", file=sys.stderr)
+    if raw.get("data_ok") is False or not (raw.get("breadth") or {}).get("universe"):
+        print("[moment_snapshot] у терминала нет данных об объёме — снимок не обновлён", file=sys.stderr)
         return 2
     out = build(raw)
     OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -357,7 +357,7 @@ def _agenda():
                     f"{when} — против входа")
         item = {"sym": r["symbol"], "side": side, "score": r.get("conf_score") or 0,
                 "cluster": r["cluster"], "why": _why(r), "plan": plan, "warn": warn,
-                "turn": round((of or {}).get("turn", 0) / 1e6, 1) if of else None,
+                "turn": round(of["turn"] / 1e6, 1) if (of and of["turn"] is not None) else None,
                 "spread": round(of["spread"], 3) if of and of.get("spread") is not None else None}
         # отсев с ПРИЧИНОЙ — чтобы было видно, что система не молчит, а именно отсеяла
         # 11.09: отсев «против фазы» снят — фаза не мерилась, а слепое вето по ней убило бы
@@ -374,7 +374,9 @@ def _agenda():
             item["drop"] = f"издержки съедят {plan['cost_of_stop']}% стопа"
         elif plan and plan["rr"] < 1.2:
             item["drop"] = f"RR {plan['rr']} — цель ближе стопа"
-        elif item["turn"] is not None and item["turn"] < _MIN_TURN_M:
+        elif item["turn"] is None:
+            item["drop"] = "нет данных об объёме торгов"
+        elif item["turn"] < _MIN_TURN_M:
             item["drop"] = f"объём торгов {item['turn']} млн — проскальзывание"
         if item.get("drop"):
             skipped.append(item)
@@ -434,8 +436,13 @@ def _agenda():
         light, reason = "yellow", f"при подтверждённых условиях кандидатов мало ({n_ok}) — выборочно, размером меньше"
     else:
         light, reason = "green", f"{n_ok} кандидатов при подтверждённых для их стороны условиях прошли кластер и издержки"
+    # без оборота все кандидаты отсеяны «нет данных» и массовое падение = 0 из 0 — это не рынок
+    data_ok = _turn_ok()
+    if not data_ok:
+        light, reason = "red", "нет данных об объёме торгов с биржи — повестка не собрана, это не сигнал рынка"
     ts_data = max((int(r.get("ts") or 0) for r in rows), default=0)
-    return {"phase": phase, "mode_code": mode_code, "mode": mode, "hint": hint, "breadth": brd, "pulse": _pulse_block(),
+    return {"phase": phase, "mode_code": mode_code, "data_ok": data_ok, "mode": mode, "hint": hint,
+            "breadth": brd, "pulse": _pulse_block(),
             "light": light, "reason": reason, "n_long": len(longs), "n_short": len(shorts),
             "drift": drf, "long_ok": long_ok, "short_ok": short_ok, "ts_data": ts_data,
             "long": longs[:_AGENDA_TOP], "short": shorts[:_AGENDA_TOP],
@@ -625,9 +632,9 @@ def _inplay():
         pass
     # 11.09: без фильтра ликвидности сюда попадал неликвид (LAPTOP 🔥 при обороте ~1 млн) —
     # тот, что повестка отсеивает как «проскальзывание». Порог общий: _MIN_TURN_M.
-    # Нет данных оборота вообще (сеть) → не фильтруем, иначе список молча опустеет.
+    # Нет данных оборота вообще (сеть, лимит) → не фильтруем, иначе список молча опустеет.
     _fetch_oif()
-    if _oif["cur"]:
+    if _turn_ok():
         coins = {s: t for s, t in coins.items()
                  if ((_oif_get(s) or {}).get("turn") or 0) >= _MIN_TURN_M * 1e6}
     ranked = sorted(coins.items(), key=lambda kv: (-len(kv[1]), kv[0]))
@@ -757,7 +764,14 @@ def _match_global(rec, g):
 _BINGX_FUND = "https://open-api.bingx.com/openApi/swap/v2/quote/premiumIndex"
 _BINGX_TICK = "https://open-api.bingx.com/openApi/swap/v2/quote/ticker"
 _BYBIT_OI = "https://api.bybit.com/v5/market/tickers?category=linear"
-_oif = {"ts": 0.0, "cur": {}, "prev": {}}
+_oif = {"ts": 0.0, "cur": {}, "prev": {}, "turn_ts": 0.0}
+_TURN_MAX_AGE = 3600     # оборот 24ч за час меняется мало; старше — «нет данных», а не цифра
+
+
+def _turn_ok():
+    """Есть ли свежий оборот хоть у одной монеты. Непустой кэш ≠ данные: funding мог прийти, а тикеры — нет."""
+    return (time.time() - _oif["turn_ts"] <= _TURN_MAX_AGE
+            and any("turn" in v for v in _oif["cur"].values()))
 
 
 # 🔴 16.08: klines/ticker ходят напрямую urllib, МИМО GlobalRateLimiter клиента — при бане
@@ -827,7 +841,15 @@ def _fetch_oif():
     except Exception:
         pass
     if cur:
-        _oif["prev"] = _oif["cur"] or cur
+        old = _oif["cur"]
+        if any("turn" in v for v in cur.values()):
+            _oif["turn_ts"] = now
+        else:   # funding пришёл, тикеры упали (лимит 100410): последний известный оборот не терять
+            for b, v in cur.items():
+                p = old.get(b) or {}
+                if "turn" in p:
+                    v["turn"], v["spread"] = p["turn"], p.get("spread")
+        _oif["prev"] = old or cur
         _oif["cur"] = cur
         _oif["ts"] = now
     return _oif["cur"]
@@ -840,8 +862,10 @@ def _oif_get(base):
     prev = _oif["prev"].get(base) or {}
     co, po = cur.get("oi"), prev.get("oi")
     oi_chg = ((co - po) / po * 100.0) if (co is not None and po) else None
-    return {"fund": cur.get("fund"), "oi_chg": oi_chg, "turn": cur.get("turn") or 0,
-            "spread": cur.get("spread")}
+    fresh = time.time() - _oif["turn_ts"] <= _TURN_MAX_AGE
+    return {"fund": cur.get("fund"), "oi_chg": oi_chg,
+            "turn": cur.get("turn") if fresh else None,          # None = нет данных, не «0 млн»
+            "spread": cur.get("spread") if fresh else None}
 
 
 _vr: dict = {}          # (sym,tf) → (ts, {ratio, z, dir})
@@ -1130,7 +1154,7 @@ def _match_oif(of, g):
             return False
         if g["oi_chg"] < 0 and v > g["oi_chg"]:       # падение ≤ (отрицательный порог)
             return False
-    if g.get("turn_min") is not None and of["turn"] < g["turn_min"] * 1e6:
+    if g.get("turn_min") is not None and (of["turn"] is None or of["turn"] < g["turn_min"] * 1e6):
         return False
     return True
 
