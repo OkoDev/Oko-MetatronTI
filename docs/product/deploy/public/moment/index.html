@@ -101,6 +101,11 @@
   .ga-sym{grid-area:sym}.ga-en{grid-area:entry}.ga-st{grid-area:stop}.ga-tg{grid-area:target}.ga-rk{grid-area:risk}.ga-ac{grid-area:action}
   .idea .sym .s{font-size:17px;font-weight:700} .idea .sym .wld{color:#C9D2DF}
   .side{display:inline-block;margin-top:5px;font:600 10px var(--mono);letter-spacing:.08em;padding:3px 8px;border-radius:4px;background:#16311F;color:var(--green)}
+  .side.short{background:#31191A;color:var(--red2)}
+  .vdot.green{background:var(--green)} .vdot.amber{background:var(--gold)} .vdot.red{background:var(--red)}
+  .demo.live{color:var(--green2);background:#0c1a12;border-color:#17301f}
+  h2 .dm{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:var(--amber2);margin-left:7px;
+    text-transform:uppercase;border:1px solid #2b2316;border-radius:4px;padding:1px 6px;vertical-align:middle}
   .cell{min-width:0;font-family:var(--mono)}
   .cell .k{font-size:10.5px;color:var(--s3);letter-spacing:.05em} .cell .v{font-size:15px;font-weight:600;margin-top:3px}
   .cell .v.red{color:var(--red2)} .cell .v.grn{color:var(--green)}
@@ -176,35 +181,35 @@
   <div class="col">
     <header class="hd">
       <a class="nm" href="/" title="На главную">METATRON</a>
-      <span class="dt">11.09 · 04:12 UTC</span>
-      <span class="demo">демо · пример</span>
+      <span class="dt" id="dt">11.09 · 04:12 UTC</span>
+      <span class="demo" id="demoBadge">демо · пример</span>
       <a class="ea" href="/#pricing">Ранний доступ</a>
     </header>
 
     <main class="body">
       <section class="verdict">
         <div class="vtop">
-          <div class="vdot"></div>
+          <div class="vdot" id="vDot"></div>
           <div class="vmain">
-            <h1>Сегодня — скорее нет</h1>
-            <p class="sub">Ни один прибор не говорит «да»: падение слабое, для шорта ещё рано.
+            <h1 id="vTitle">Сегодня — скорее нет</h1>
+            <p class="sub" id="vSub">Ни один прибор не говорит «да»: падение слабое, для шорта ещё рано.
               Если всё-таки входишь — <b>половина обычного размера</b>.</p>
-            <div class="pulse">
+            <div class="pulse" id="vPulse">
               <span class="pchip">Рынок — <b>спокойно</b></span>
               <span class="pchip">Ликвидации за час: шортов больше — <b>$95k</b> против $26k лонгов</span>
             </div>
-            <div class="move">
+            <div class="move" id="vMove">
               <span class="mv"><span class="tf">15 мин</span><span class="dn">↓0%</span><span class="up">↑1%</span></span>
               <span class="sep">·</span>
               <span class="mv"><span class="tf">2 часа</span><span class="dn">↓0%</span><span class="up">↑3%</span></span>
               <span class="sep">·</span>
               <span class="mv"><span class="tf">6 часов</span><span class="dn">↓2%</span><span class="up">↑43%</span></span>
             </div>
-            <p class="measured"><span class="mi">◆ замерено</span>Шорт в начале слива <b>4 года из 4</b> оказывался хуже обычного часа — поэтому «скорее нет».</p>
+            <p class="measured" id="vMeasured"><span class="mi">◆ замерено</span>Шорт в начале слива <b>4 года из 4</b> оказывался хуже обычного часа — поэтому «скорее нет».</p>
           </div>
           <div class="vcount"><div class="l">дней подряд</div><div class="n">3</div></div>
         </div>
-        <div class="gauges">
+        <div class="gauges" id="gauges">
           <div class="ga">
             <div class="r1"><span class="nm">Падают разом</span><span class="mt">обвал — от 15%</span></div>
             <div class="val" style="color:var(--red)">1.9%</div>
@@ -227,8 +232,8 @@
       </section>
 
       <section class="ideas">
-        <div class="ih"><h2>Если всё-таки смотришь</h2><span class="m">3 из 15 прошли проверку — совпадения, издержки, оборот</span></div>
-        <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="ih"><h2 id="ihTitle">Если всё-таки смотришь</h2><span class="m" id="ihNote">3 из 15 прошли проверку — совпадения, издержки, оборот</span></div>
+        <div style="display:flex;flex-direction:column;gap:10px" id="ideaList">
           <article class="idea">
             <div class="sym ga-sym"><div class="s">SUI</div><span class="side">ЛОНГ</span></div>
             <div class="cell ga-en"><div class="k">ВХОД</div><div class="v">0.7320</div></div>
@@ -259,7 +264,7 @@
               <span class="lockbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>На стол · по подписке</span></div>
           </article>
         </div>
-        <div class="drop">отсеяно 12: малый оборот — 7 · без подтверждения — 3 · цель ближе стопа — 1 · рано для шорта — 1</div>
+        <div class="drop" id="drop">отсеяно 12: малый оборот — 7 · без подтверждения — 3 · цель ближе стопа — 1 · рано для шорта — 1</div>
       </section>
     </main>
   </div>
@@ -275,7 +280,7 @@
       </div>
     </div>
     <div>
-      <h2>Последнее</h2>
+      <h2>Последнее<span class="dm">демо</span></h2>
       <ul class="feed">
         <li><span class="tm">03:48</span><span class="tx">закрыл <b>ETHFI</b> по цели <span class="grn">+1.24%</span></span></li>
         <li><span class="tm">03:30</span><span class="tx">режим сменился — <span class="amb">для шорта не время</span></span></li>
@@ -293,6 +298,96 @@
 
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<script>
+/* /moment читает снимок повестки (scripts/moment_snapshot.py → agenda.json). Нет файла или
+   ошибка — остаётся вшитое демо как скелет. Публичного бэкенда нет: файл деплоится статикой. */
+(function(){
+  "use strict";
+  var CVAR = {green:"var(--green)", amber:"var(--amber)", red:"var(--red)", s1:"var(--s1)"};
+  var LK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">'
+         + '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>';
+  function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+  function set(id, txt){ var el=document.getElementById(id); if(el) el.textContent=txt; }
+
+  function verdict(v){
+    if(!v) return;
+    set("vTitle", v.title);
+    set("vSub", v.sub);
+    var dot=document.getElementById("vDot");
+    if(dot) dot.className="vdot "+(v.light==="green"?"green":v.light==="red"?"red":"amber");
+  }
+  function pulse(p){
+    if(!p) return;
+    var chips=['<span class="pchip">Рынок — <b>'+esc(p.state)+'</b></span>'];
+    if(p.liq) chips.push('<span class="pchip">'+esc(p.liq.replace(/^⚡\s*/,""))+'</span>');
+    var vp=document.getElementById("vPulse"); if(vp) vp.innerHTML=chips.join("");
+    if(p.move && p.move.length){
+      var mv=p.move.map(function(m){
+        return '<span class="mv"><span class="tf">'+esc(m.tf)+'</span>'
+             + '<span class="dn">↓'+esc(m.dn)+'%</span><span class="up">↑'+esc(m.up)+'%</span></span>';
+      }).join('<span class="sep">·</span>');
+      var vm=document.getElementById("vMove"); if(vm) vm.innerHTML=mv;
+    }
+  }
+  function measured(d){
+    var el=document.getElementById("vMeasured"); if(!el) return;
+    if(d.measured){ el.innerHTML='<span class="mi">◆ замерено</span>'+esc(d.measured); el.style.display=""; }
+    else el.style.display="none";
+  }
+  function gauges(g){
+    if(!g) return;
+    var box=document.getElementById("gauges"); if(!box) return;
+    function one(x){
+      var col=CVAR[x.color]||"var(--s1)";
+      var bar=x.pct>0 ? '<div class="bar"><i style="width:'+x.pct+'%;background:'+col+'"></i></div>'
+                      : '<div class="bar"></div>';
+      return '<div class="ga'+(x.dim?' dim':'')+'">'
+        + '<div class="r1"><span class="nm">'+esc(x.label)+'</span><span class="mt">'+esc(x.meta)+'</span></div>'
+        + '<div class="val" style="color:'+col+'">'+esc(x.val)+'</div>'
+        + bar
+        + '<div class="cap" style="color:'+col+'">'+esc(x.cap)+'</div></div>';
+    }
+    box.innerHTML=one(g.breadth)+one(g.drift)+one(g.phase);
+  }
+  function idea(it){
+    var warn=it.warn;
+    var act='<div class="map '+(warn?"warn":"norm")+'">'+(warn?"⚠ "+esc(warn):"")+'</div>'
+          + '<span class="lockbtn">'+LK+'На стол · по подписке</span>';
+    return '<article class="idea'+(warn?" warn":"")+'">'
+      + '<div class="sym ga-sym"><div class="s">'+esc(it.sym)+'</div>'
+      +   '<span class="side '+(it.side_cls==="short"?"short":"")+'">'+esc(it.side)+'</span></div>'
+      + '<div class="cell ga-en"><div class="k">ВХОД</div><div class="v">'+esc(it.entry)+'</div></div>'
+      + '<div class="cell ga-st"><div class="k">СТОП '+esc(it.stop_pct)+'</div><div class="v red">'+esc(it.stop)+'</div></div>'
+      + '<div class="cell ga-tg"><div class="k">ЦЕЛЬ '+esc(it.target_pct)+'</div><div class="v grn">'+esc(it.target)+'</div></div>'
+      + '<div class="risk ga-rk"><div class="k">ПЛЕЧО ДО</div><div class="v">×'+esc(it.lev==null?"—":it.lev)+'</div>'
+      +   '<div class="rr">на $1 риска — $'+esc(it.rr)+' цели</div></div>'
+      + '<div class="act ga-ac">'+act+'</div></article>';
+  }
+  function ideas(x){
+    if(!x) return;
+    set("ihTitle", x.title); set("ihNote", x.note);
+    var list=document.getElementById("ideaList"); if(!list) return;
+    if(x.items && x.items.length) list.innerHTML=x.items.map(idea).join("");
+    else list.innerHTML='<div class="drop">сегодня ни одна идея не прошла проверку — смотрим, не торгуем</div>';
+  }
+  function render(d){
+    if(d.generated_utc){
+      set("dt", d.generated_utc);
+      var b=document.getElementById("demoBadge");
+      if(b){ b.textContent="данные рынка · "+d.generated_utc.split("· ").pop(); b.className="demo live"; }
+    }
+    verdict(d.verdict); pulse(d.pulse); measured(d); gauges(d.gauges);
+    ideas(d.ideas);
+    if(d.dropped!=null) set("drop", d.dropped);
+  }
+  fetch("./agenda.json?v="+Date.now(), {cache:"no-store"})
+    .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+    .then(render)
+    .catch(function(){ /* файла нет — остаётся демо-скелет */ });
+})();
+</script>
 
 </body>
 </html>
