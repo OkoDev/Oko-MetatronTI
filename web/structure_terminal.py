@@ -57,10 +57,20 @@ def _drift_regime():
         return {"d30": round(float(d["drift30"]), 2),
                 "slope": None if d.get("slope180") is None else round(float(d["slope180"]), 1),
                 "day": d["day"], "coins": d["n_coins"], "short_ok": bool(ok),
-                "why": why.replace("gate:", "", 1)}
+                "why": _hum_gate(why.replace("gate:", "", 1))}
     except Exception as e:
         print(f"[DRIFT] {e}")
         return None
+
+
+def _hum_gate(why):
+    """Текст гейта дрейфа → человеческий. Сам universe_drift.gate не трогаем: его строку пишет в логи бот.
+    Статус (пропуск/БЛОК) отрезаем — экран показывает его отдельно («шорт: условий нет»)."""
+    for a, b in (("пропуск — ", ""), ("БЛОК — ", ""), ("drift30=", "рынок за 30д "),
+                 ("производная нет данных", "ускорение: нет данных"), ("производная —", "ускорение: без порога"),
+                 ("производная=", "ускорение "), ("(день ", "(данные на ")):
+        why = why.replace(a, b)
+    return why
 
 
 _PULSE_STALE = 300      # снимок пульса старше 5 мин — прибор молчит, состояние не выдаём за живое
@@ -462,6 +472,10 @@ async def api_screener(req):
         # конфликт со фазой рынка: шорт при растущем рынке и наоборот — не запрет, а метка
         r["vs_phase"] = bool((side == "short" and "UP" in phase.upper())
                              or (side == "long" and "DOWN" in phase.upper()))
+        try:                                   # hits — ключи весов скоринга, их не трогаем; hits_h — для экрана
+            r["hits_h"] = [_hum_hit(h) for h in json.loads(r.get("hits") or "[]")]
+        except (ValueError, TypeError):
+            r["hits_h"] = None
     return web.json_response({"rows": rows, "phase": phase, "ts": int(time.time())})
 
 
@@ -2280,11 +2294,7 @@ __NAV__
   <div class=upd id=upd></div>
 </div>
 <script>
-// перевод только ОТОБРАЖЕНИЯ: сами значения — ключи логики (цвет, сравнения), их не трогаем. Канон: docs/product/glossary.json
-var PHASE_RU={TREND_UP:'восходящая',TREND_DOWN:'нисходящая',RANGE:'флэт',UNCLEAR:'пока не ясна',
- MARKUP_UP:'разгон вверх',REVERSAL_BREWING:'назревает разворот'};
-var PULSE_RU={'НОРМА':'СПОКОЙНО','ВЫНОС':'РЕЗКИЙ РОСТ'};
-var WIN_RU={'15m':'15м','2h':'2ч','6h':'6ч'};
+__HUMAN_JS__
 function card(x){
  var p=x.plan||{};
  var why=(x.why||[]).map(function(w){
@@ -2445,26 +2455,26 @@ __NAV__
 <div class=row style=margin-top:14px><div class=banner b-w id=rot>…</div></div>
 <div class="card phase" id=phase></div>
 <div class=card style=margin-top:14px>
-  <div class=lbl>🌊 ШИРИНА ПАДЕНИЯ <span class=dim style=text-transform:none>· сколько монет падает
-    ОДНОВРЕМЕННО (4h: ATRTrend↑ + WT&lt;−60) · порог 61 → фейд PF 1.62→4.22 (p=0.00026)</span></div>
+  <div class=lbl>🌊 МАССОВОЕ ПАДЕНИЕ <span class=dim style=text-transform:none>· сколько ликвидных монет падает
+    ОДНОВРЕМЕННО (4ч: растущий ATR-тренд + индикатор перепроданности ниже −60) · порог 61 монета → отскок PF 1.62→4.22 (p=0.00026)</span></div>
   <div id=breadth style=margin-top:6px>…</div>
 </div>
 <div class=card style=margin-top:14px>
-  <div class=lbl>⚖️ ФОРВАРД-ТАБЛО · net% источников <span class=dim style=text-transform:none>· чистая эра ≥11.07 · гейт 30 net+ → реальные деньги</span></div>
+  <div class=lbl>⚖️ ЖИВАЯ ПРОВЕРКА СТРАТЕГИЙ · net% после издержек <span class=dim style=text-transform:none>· честный период: с 11 июля · после 30 сделок в плюс — на реальные деньги</span></div>
   <div class=sbgrid id=board></div>
 </div>
 <div class=card style=margin-top:14px>
-  <div class=lbl>🎯 В ИГРЕ сейчас <span class=dim style=text-transform:none>· радар🚀🌱🔨 · OTE🎯 · DC🤖 · хайп🔥 · только ликвидные (порог как в повестке) · порядок = сколько источников заметили монету: это внимание, а не прогноз</span></div>
+  <div class=lbl>🎯 В ИГРЕ сейчас <span class=dim style=text-transform:none>· радар🚀🌱🔨 · зона интереса🎯 · ИИ-советник🤖 · хайп🔥 · только ликвидные (порог как в повестке) · порядок = сколько сигналов заметили монету: это внимание, а не прогноз</span></div>
   <div class=ipwrap id=inplay></div>
 </div>
 <div class=card style=margin-top:14px>
-  <div class=lbl>🔭 СКРИНЕР OKO-SM · нога старшего 4h · схождения · WT <span id=scount class=dim></span></div>
+  <div class=lbl>🔭 СКРИНЕР OKO · импульс старшего 4ч · схождения · индикатор перепроданности <span id=scount class=dim></span></div>
   <div class=chips id=filters>
     <span class=chip data-f=all>все</span>
-    <span class=chip data-f=zone>🎯 в зоне</span>
-    <span class=chip data-f=approach>→ подход</span>
-    <span class=chip data-f=long>LONG</span>
-    <span class=chip data-f=short>SHORT</span>
+    <span class=chip data-f=zone>🎯 в зоне интереса</span>
+    <span class=chip data-f=approach>→ подходит к зоне</span>
+    <span class=chip data-f=long>ЛОНГ</span>
+    <span class=chip data-f=short>ШОРТ</span>
     <span class=chip data-f=conf>score ≥ 3</span>
     <span class=chip data-f=cluster title="≥2 монеты в ту же сторону">🔗 кластер ≥2</span>
     <span class=chip data-f=breakout>⚡ пробой (≤3% к уровню)</span>
@@ -2472,15 +2482,16 @@ __NAV__
   <div style="overflow-x:auto;margin-top:6px">
   <table id=scr style="width:100%;border-collapse:collapse;font-size:12.5px;text-align:left;font-variant-numeric:tabular-nums">
     <thead><tr style="color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em">
-      <th data-s=symbol>пара</th><th data-s=trend>нога</th><th data-s=retr>откат</th>
-      <th data-s=status>статус</th><th data-s=cluster title="сколько монет прямо сейчас дают сигнал в ту же сторону и стоят в зоне/подходе. Одиночка PF 0.67 против кластера ≥2 — 2.24">кластер</th><th data-s=conf_score>score <span class=ar>▼</span></th>
-      <th data-s=res_dist>уровень ↑↓</th><th>схождения</th><th data-s=wt>WT</th><th data-s=div>див</th><th></th></tr></thead>
+      <th data-s=symbol>пара</th><th data-s=trend>импульс</th><th data-s=retr>откат</th>
+      <th data-s=status>статус</th><th data-s=cluster title="сколько монет прямо сейчас дают сигнал в ту же сторону и стоят в зоне интереса или подходят к ней. Без поддержки других монет PF 0.67 против кластера ≥2 — 2.24">кластер</th><th data-s=conf_score>score <span class=ar>▼</span></th>
+      <th data-s=res_dist>уровень ↑↓</th><th>схождения</th><th data-s=wt title="индикатор перепроданности (WaveTrend) 4ч: ниже −60 — перепроданность, выше +60 — перекупленность">индикатор</th><th data-s=div>дивергенция</th><th></th></tr></thead>
     <tbody></tbody>
   </table></div>
 </div>
 <div class=meta id=foot></div>
 </div>
 <script>
+__HUMAN_JS__
 function arrow(x){return x>0.001?'<span class=up>▲ '+x.toFixed(3)+'</span>':x<-0.001?'<span class=dn>▼ '+x.toFixed(3)+'</span>':'· '+x.toFixed(3)}
 function bcls(v){if(!v)return'b-w';if(v.includes('🟢'))return'b-g';if(v.includes('🟡'))return'b-y';if(v.includes('🔴'))return'b-r';if(v.includes('🟠'))return'b-o';return'b-w'}
 async function tick(){
@@ -2489,21 +2500,23 @@ async function tick(){
   const du=rt?rt.d_usdtd:0,db=rt?rt.d_btcd:0,da=rt?rt.d_alt_pct:0;
   // 11.09: значение и стрелка — из ОДНОЙ серии (часовая CMC, по ней же вердикт ротации).
   // Было: значение из live_dominance (6.92%), стрелка из CMC (там USDT.D 7.02%) — разные ряды.
-  const cards=[['USDT.D',rt?rt.usdt_d:(dm?dm.usdt_d:null),du,'пп'],['BTC.D',rt?rt.btc_d:(dm?dm.btc_d:null),db,'пп'],['ALT.D',dm?dm.alt_d:null,da,'% альт-капы']];
+  const cards=[['USDT.D',rt?rt.usdt_d:(dm?dm.usdt_d:null),du,'п.п.'],['BTC.D',rt?rt.btc_d:(dm?dm.btc_d:null),db,'п.п.'],['ALT.D',dm?dm.alt_d:null,da,'% капитализации альтов']];
   document.getElementById('tri').innerHTML=cards.map(c=>
    '<div class=card><div class=lbl>'+c[0]+'</div><div class=val>'+(c[1]!=null?c[1].toFixed(2)+'%':'—')+'</div><div class=d>'+arrow(c[2])+' <span style=color:var(--dim)>'+c[3]+' /'+(rt?rt.window_h:'?')+'ч</span></div></div>').join('');
-  const rot=document.getElementById('rot');rot.className='banner '+bcls(rt&&rt.verdict);rot.textContent=rt?rt.verdict:'ротация: нет данных (CMC)';
+  const rot=document.getElementById('rot');rot.className='banner '+bcls(rt&&rt.verdict);rot.textContent=rt?rt.verdict:'ротация: нет данных';
   // 11.09: режим — измеренный дрейф вселенной; фаза phase_watch только справочно
   const ph=d.phase,dr=d.drift;document.getElementById('phase').innerHTML=
-   '<div class=lbl>РЕЖИМ РЫНКА · дрейф вселенной</div>'+
+   '<div class=lbl>РЕЖИМ РЫНКА · движение рынка за 30 дней</div>'+
    (dr?('<div style=font-size:18px;font-weight:600;margin-top:4px>'+(dr.d30>0?'+':'')+dr.d30+'% за 30 дней</div>'+
-        '<div class=meta>шорт '+(dr.short_ok?'<span class=up>в режиме</span>':'<span class=dn>вне режима</span>')+' · '+dr.why+'</div>')
-      :'<div class=meta>нет свежего дрейфа — наполнитель не отработал</div>')+
-   '<div class=meta style="margin-top:6px;opacity:.6" title="ретро-тест 46 тыс. сделок: макро-фаза разделяет результат на +0.003 п.п.">фаза phase_watch: '+
-    (ph?ph.phase:'—')+' — справочно, как режим не мерилась</div>';
-  const cov=dm?(' · покрытие '+(dm.cov_mcap*100).toFixed(0)+'% mcap · живое USDT.D '+dm.usdt_d.toFixed(2)+
-   '% по живым ценам (карточки выше — часовая серия CMC, как и стрелки)'):'';
-  document.getElementById('foot').textContent='total '+(dm?('$'+(dm.total_mcap/1e12).toFixed(3)+'T'):'—')+cov+' · self-computed (без TW/прокси)';
+        '<div class=meta>шорт: '+(dr.short_ok?'<span class=up>условия есть</span>':'<span class=dn>условий нет</span>')+' · '+dr.why+'</div>')
+      :'<div class=meta>нет свежих данных о движении рынка за 30 дней</div>')+
+   '<div class=meta style="margin-top:6px;opacity:.6" title="ретро-тест 46 тыс. сделок: фаза рынка разделяет результат лишь на +0.003 п.п.">фаза рынка: '+
+    (ph?(PHASE_RU[ph.phase]||ph.phase):'—')+' — справочно, как условие не проверена</div>';
+  const cov=dm?(' · покрытие '+(dm.cov_mcap*100).toFixed(0)+'% капитализации · USDT.D по живым ценам '+dm.usdt_d.toFixed(2)+
+   '% (карточки выше — часовые данные капитализации, как и стрелки)'):'';
+  const ft=document.getElementById('foot');
+  ft.textContent='вся капитализация '+(dm?('$'+(dm.total_mcap/1e12).toFixed(3)+'T'):'—')+cov+' · считаем сами по живым ценам';
+  ft.title='монет в обращении и часовая история глобальной капитализации — CoinMarketCap (раз в сутки / раз в час)';
   document.getElementById('age').textContent='обновлено '+new Date(d.ts*1000).toLocaleTimeString('ru');
  }catch(e){document.getElementById('age').innerHTML='<span class=err>сервер недоступен</span>';}
 }
@@ -2523,16 +2536,15 @@ function divCell(x){
  var t=x.div_type;if(!t)return '<span class=dim>—</span>';
  var bull=t.indexOf('+')>0,a=(x.div_age==null?0:x.div_age);
  var col=bull?'var(--up)':'var(--dn)';
- return '<span style="color:'+col+';opacity:'+(a<=3?1:.55)+'" title="'+
-  (t[0]=='R'?'regular — разворотная':'hidden — продолжение тренда')+
-  ', обнаружена '+a+' бар(ов) назад">'+t+'</span> <span class=lk>'+a+'б</span>';}
+ return '<span style="color:'+col+';opacity:'+(a<=3?1:.55)+'" title="дивергенция '+
+  (DIV_RU[t]||t)+', обнаружена '+a+' бар. назад">'+t+'</span> <span class=lk>'+a+' бар.</span>';}
 // Кластер: ≥2 монеты в ту же сторону = PF 2.24 против 0.67 у одиночки. Показываем числом,
 // одиночек приглушаем — чтобы высокий score одиночного сетапа не выглядел сильнее кластерного.
 function cluCell(x){
  var n=x.cluster||0;
  if(!n)return '<span class=dim>—</span>';
  var col=n>=2?'var(--up)':'var(--dim)';
- var tip=n>=2?('вместе с: '+(x.cluster_peers||[]).join(', ')):'одиночный сигнал — PF 0.67 против 2.24 у кластера';
+ var tip=n>=2?('вместе с: '+(x.cluster_peers||[]).join(', ')):'без поддержки других монет — PF 0.67 против 2.24 у кластера';
  return '<span style="color:'+col+';font-weight:'+(n>=2?700:400)+'" title="'+tip+'">×'+n+'</span>';}
 function scRender(){
  var f=SR.filt,rows=SR.rows.filter(function(x){
@@ -2548,18 +2560,18 @@ function scRender(){
  document.getElementById('scount').textContent='· '+rows.length;
  var mx=Math.max.apply(null,rows.map(function(x){return x.conf_score||0}).concat([5]));
  document.querySelector('#scr tbody').innerHTML=rows.map(function(x){
-  var st=x.in_zone?'<span class=gold>🎯 в зоне</span>':(x.approach?'→ подход':'—');
+  var st=x.in_zone?'<span class=gold>🎯 в зоне интереса</span>':(x.approach?'→ подходит к зоне':'—');
   var legc=x.trend=='long'?'var(--up)':'var(--dn)';
-  var hits=(JSON.parse(x.hits||'[]')).slice(0,3).join(' ∩ ')||'—';
+  var hits=(x.hits_h||JSON.parse(x.hits||'[]')).slice(0,3).join(' ∩ ')||'—';
   var bw=Math.round(36*(x.conf_score||0)/mx);
   var tw='https://ru.tradingview.com/chart/?symbol=BINGX%3A'+x.symbol+'USDT.P&interval=240';
   var bx='https://bingx.com/ru/perpetual/'+x.symbol+'-USDT';
   return '<tr>'+
    '<td style="font-weight:600"><a href="'+tw+'" target=_blank>'+x.symbol+'</a></td>'+
-   '<td style="color:'+legc+'">'+(x.trend||'—').toUpperCase()+
-     (x.vs_phase?' <span title="сигнал против фазы рынка ('+(SR.phase||'')+') — не запрет, но повод проверить" style=color:var(--o)>⚠</span>':'')+'</td>'+
+   '<td style="color:'+legc+'">'+(SIDE_RU[x.trend]||'—')+
+     (x.vs_phase?' <span title="сигнал против фазы рынка ('+(PHASE_RU[SR.phase]||SR.phase||'')+') — не запрет, но повод проверить" style=color:var(--o)>⚠</span>':'')+'</td>'+
    '<td>'+(x.retr!=null?Math.round(x.retr*100)+'%':'—')+'</td>'+
-   '<td>'+st+(x.noise?' <span style=color:var(--dim)>шум</span>':'')+'</td>'+
+   '<td>'+st+(x.noise?' <span style=color:var(--dim) title="импульс меньше 4 ATR — движение незначимое">мелкий импульс</span>':'')+'</td>'+
    '<td>'+cluCell(x)+'</td>'+
    '<td style="font-weight:600;color:'+(x.conf_score>=3?'#e0b25c':'inherit')+'">'+(x.conf_score||0).toFixed(1)+
      '<span class=sbar style="width:'+bw+'px"></span></td>'+
@@ -2568,15 +2580,15 @@ function scRender(){
    '<td>'+(x.wt>0?'+':'')+Math.round(x.wt||0)+'</td>'+
    '<td>'+divCell(x)+'</td>'+
    '<td class=lk><a href="'+bx+'" target=_blank>BINGX↗</a></td></tr>';
- }).join('')||'<tr><td colspan=10 style="padding:10px;color:var(--dim)">скринер наполняется (цикл вахты 15 мин)…</td></tr>';
+ }).join('')||'<tr><td colspan=10 style="padding:10px;color:var(--dim)">сбор данных (частота 15 мин)…</td></tr>';
 }
 async function scr(){try{var r=await fetch('/api/screener?limit=150',{cache:'no-store'});var d=await r.json();
  SR.rows=d.rows||[];SR.phase=d.phase||'';scRender();}catch(e){}}
 // Расшифровка значков при наведении — кто именно обратил внимание на монету
-var TAGH=[['🚀','радар: ПАМП — всплеск объёма и цены'],['🌱','радар: ПРУЖИНА — сжатие перед выносом'],
- ['🔨','радар: НАКОПЛЕНИЕ — набор позиции в диапазоне'],['🎯','скринер OKO-SM: цена в OTE-зоне ноги 4h (цифра = score схождений)'],
- ['🤖','DC-советник держит по монете сделку'],['🔥','хайп: монета в тренде CoinGecko'],
- ['↑','сторона LONG'],['↓','сторона SHORT']];
+var TAGH=[['🚀','радар: ПАМП — всплеск объёма и цены'],['🌱','радар: ПРУЖИНА — сжатие перед резким движением'],
+ ['🔨','радар: НАКОПЛЕНИЕ — набор позиции в диапазоне'],['🎯','скринер OKO: цена в зоне интереса после отката импульса 4ч (цифра = score схождений)'],
+ ['🤖','сделка ИИ-советника по монете'],['🔥','хайп: монета в трендах'],
+ ['↑','сторона ЛОНГ'],['↓','сторона ШОРТ']];
 function tagHint(t){
  var out=[];TAGH.forEach(function(p){if(t.indexOf(p[0])>=0)out.push(p[0]+' — '+p[1]);});
  return (out.join('\\n')||t)+'\\n\\nЧем больше значков, тем выше конфлюэнция внимания.';}
@@ -2606,11 +2618,11 @@ async function brd(){
     '<span style="font-size:32px;font-weight:700;color:'+(wide?'var(--g)':'var(--tx)')+'">'+d.share_pct+'%</span>'+
     '<span style=color:var(--dim)>'+n+' из '+d.universe+' ликвидных за 24ч · сейчас '+d.now+'</span>'+
     '<span style="margin-left:auto;font-weight:600;color:'+(wide?'var(--g)':'var(--dim)')+'">'+
-     (wide?'ШИРОКОЕ ПАДЕНИЕ — фейд в силе':'узко — фейд слабый (нужно ≥'+d.share_hi_pct+'%)')+'</span></div>'+
+     (wide?'МАССОВОЕ ПАДЕНИЕ — отскок вероятен':'падение не массовое — отскок слабый (нужно ≥'+d.share_hi_pct+'%)')+'</span></div>'+
    '<div style="height:6px;border-radius:3px;background:var(--line);margin-top:8px;overflow:hidden">'+
     '<span style="display:block;height:100%;width:'+pct+'%;background:'+(wide?'var(--g)':'#5a4a28')+'"></span></div>'+
-   (d.cover!=null&&d.cover<0.8?('<div style=margin-top:6px;color:var(--o);font-size:12px>окно неполное: '+
-     d.cover_h+' ч из 24 — лог пишется с 11.09 в фоне, полное окно будет через сутки</div>'):'')+
+   (d.cover!=null&&d.cover<0.8?('<div style=margin-top:6px;color:var(--o);font-size:12px>данные за '+
+     d.cover_h+' ч из 24 — полное окно через сутки</div>'):'')+
    (d.syms&&d.syms.length?('<div style=margin-top:8px;color:var(--dim);font-size:12px>падают сейчас: '+
      d.syms.join(' · ')+'</div>'):'');
  }catch(e){}}
@@ -2619,14 +2631,14 @@ async function sb(){try{var r=await fetch('/api/scoreboard',{cache:'no-store'});
   var v=x.vst,s=x.sim;                              // VST = гейт (реал исполнение); SIM = shadow-research
   var prim=v||s,shadow=!v&&s;                       // нет VST → показываем SIM как shadow
   // 09.10: технические закрытия (сироты 01–18.09, сбои учёта) в n/WR/net не входят — показываем их число отдельно
-  var tech=x.tech?' <span style=color:var(--dim2) title="сироты бага формата 01–18.09, fakeR-карантин, вход записан дальше 10% от сигнала">· исключено техн. '+x.tech+'</span>':'';
+  var tech=x.tech?' <span style=color:var(--dim2) title="ошибки записи сделок">· исключено по тех. причинам: '+x.tech+'</span>':'';
   if(!prim)return '<div class=sbcell><div class=sbsrc>'+x.src+'</div><div class=sbnet style=color:var(--dim)>—</div><div class=sbmeta>нет сделок'+tech+'</div></div>';
   var pos=prim.net>0,c=pos?'var(--up)':'var(--dn)';
   var prog=Math.min(100,Math.round(100*((v?v.n:0))/g));
-  return '<div class=sbcell><div class=sbsrc>'+x.src+(shadow?' <span style=color:#e0b25c>shadow</span>':'')+'</div>'+
+  return '<div class=sbcell><div class=sbsrc>'+x.src+(shadow?' <span style=color:#e0b25c title="на демо-счёте сделок ещё нет — показана симуляция">симуляция</span>':'')+'</div>'+
    '<div class=sbnet style="color:'+c+'">'+(pos?'+':'')+prim.net.toFixed(2)+'%</div>'+
-   '<div class=sbmeta>'+(v?('VST n '+v.n+'/'+g+' · WR '+v.wr+'%'):('SIM n '+s.n+' · WR '+s.wr+'%'))+
-     (v&&s?(' <span style=color:var(--dim2)>· sim '+(s.net>0?'+':'')+s.net.toFixed(2)+'%</span>'):'')+tech+'</div>'+
+   '<div class=sbmeta>'+(v?('демо '+v.n+'/'+g+' · прибыльных '+v.wr+'%'):('симуляция '+s.n+' · прибыльных '+s.wr+'%'))+
+     (v&&s?(' <span style=color:var(--dim2)>· симуляция '+(s.net>0?'+':'')+s.net.toFixed(2)+'%</span>'):'')+tech+'</div>'+
    '<div class=sbbar><span style="width:'+prog+'%;background:'+c+'"></span></div></div>';
  }).join('');
 }catch(e){}}
@@ -2634,9 +2646,20 @@ tick();scr();ip();sb();brd();setInterval(tick,30000);setInterval(scr,60000);setI
 </script></body></html>"""
 
 
+# Перевод ОТОБРАЖЕНИЯ кодов-ключей (значения в данных не меняем). Канон: docs/product/glossary.json
+_HUMAN_JS = """var PHASE_RU={TREND_UP:'восходящая',TREND_DOWN:'нисходящая',RANGE:'флэт',UNCLEAR:'пока не ясна',
+ MARKUP_UP:'разгон вверх',REVERSAL_BREWING:'назревает разворот'};
+var PULSE_RU={'НОРМА':'СПОКОЙНО','ВЫНОС':'РЕЗКИЙ РОСТ'};
+var WIN_RU={'15m':'15м','2h':'2ч','6h':'6ч'};
+var SIDE_RU={long:'ЛОНГ',short:'ШОРТ'};
+var DIV_RU={'R+':'регулярная бычья — разворот','R−':'регулярная медвежья — разворот',
+ 'H+':'скрытая бычья — продолжение тренда','H−':'скрытая медвежья — продолжение тренда'};"""
+
+
 def _page(html, active):
     """Собирает страницу: общие токены + навигация с отметкой текущего раздела."""
-    return html.replace("__CSS_BASE__", _CSS_BASE).replace("__NAV__", _nav(active))
+    return (html.replace("__CSS_BASE__", _CSS_BASE).replace("__NAV__", _nav(active))
+            .replace("__HUMAN_JS__", _HUMAN_JS))
 
 
 async def agenda_page(_req):
@@ -2732,7 +2755,7 @@ __NAV__
     <div class=row id=g_market></div>
   </div>
   <div class=sect>
-    <div class=lbl>Толпа и ликвидность <span class=note style=text-transform:none>деньги и цена входа</span>
+    <div class=lbl>Позиции и ликвидность <span class=note style=text-transform:none>кто в рынке и сколько стоит вход</span>
       <span class="xs" data-clear=flow>✕ сбросить</span></div>
     <div class=row id=g_flow></div>
   </div>
@@ -2789,9 +2812,9 @@ document.getElementById('g_market').innerHTML=
 document.getElementById('g_flow').innerHTML=
  '<span class=grp title="ставка финансирования BingX"><b>funding</b><input type=number id=g_fmin placeholder=min step=0.005 style=width:56px>..<input type=number id=g_fmax placeholder=max step=0.005 style=width:56px>%</span>'+
  '<span class=grp title="изменение открытого интереса за ~5 минут"><b>OI</b><select id=g_oidir><option value="">—</option><option value=up>рост ≥</option><option value=down>падение ≥</option></select><input type=number id=g_oipct value=2 step=0.5 style=width:46px>%</span>'+
- '<span class=grp title="суточный оборот: ниже 10 млн проскальзывание съедает эдж"><b>оборот ≥</b><input type=number id=g_turn placeholder=любой style=width:60px>млн$</span>'+
+ '<span class=grp title="объём торгов за 24ч: ниже 10 млн проскальзывание съедает эдж"><b>объём за 24ч ≥</b><input type=number id=g_turn placeholder=любой style=width:60px>млн$</span>'+
  '<span class=grp title="спред BingX: прямой налог на каждый вход"><b>спред ≤</b><input type=number id=g_spread placeholder=0.05 step=0.01 style=width:56px>%</span>'+
- '<span class=grp title="объём последнего ЗАКРЫТОГО бара к средней за 20 баров"><b>объём ≥</b><input type=number id=g_vr placeholder=3 step=0.5 style=width:46px>×<select id=g_vtf><option value=3m>3m</option><option value=5m>5m</option><option value=15m>15m</option><option value=1h selected>1h</option><option value=4h>4h</option><option value=1d>1d</option></select></span>';
+ '<span class=grp title="объём последнего ЗАКРЫТОГО бара к средней за 20 баров"><b>всплеск объёма ≥</b><input type=number id=g_vr placeholder=3 step=0.5 style=width:46px>×<select id=g_vtf><option value=3m>3m</option><option value=5m>5m</option><option value=15m>15m</option><option value=1h selected>1h</option><option value=4h>4h</option><option value=1d>1d</option></select></span>';
 
 // ── БЛОКИ ТФ: аккордеон, свёрнутый показывает сводку активных условий ──
 document.getElementById('blocks').innerHTML=TFS.map(function(tf){
@@ -3966,10 +3989,10 @@ async function pullLv(){
    drawOv(c);});
  }catch(e){}}
 // Расшифровка значков «в игре» — кто именно обратил внимание на монету (подсказка при наведении)
-var TAGH=[['🚀','радар: ПАМП — всплеск объёма и цены'],['🌱','радар: ПРУЖИНА — сжатие перед выносом'],
- ['🔨','радар: НАКОПЛЕНИЕ — набор позиции в диапазоне'],['🎯','скринер OKO-SM: цена в OTE-зоне ноги 4h (цифра = score схождений)'],
- ['🤖','DC-советник держит по монете сделку'],['🔥','хайп: монета в тренде CoinGecko'],
- ['↑','сторона LONG'],['↓','сторона SHORT']];
+var TAGH=[['🚀','радар: ПАМП — всплеск объёма и цены'],['🌱','радар: ПРУЖИНА — сжатие перед резким движением'],
+ ['🔨','радар: НАКОПЛЕНИЕ — набор позиции в диапазоне'],['🎯','скринер OKO: цена в зоне интереса после отката импульса 4ч (цифра = score схождений)'],
+ ['🤖','сделка ИИ-советника по монете'],['🔥','хайп: монета в трендах'],
+ ['↑','сторона ЛОНГ'],['↓','сторона ШОРТ']];
 function tagHint(t){
  var out=[];TAGH.forEach(function(p){if(t.indexOf(p[0])>=0)out.push(p[0]+' — '+p[1]);});
  return (out.join('\\n')||t)+'\\n\\nЧем больше значков, тем выше конфлюэнция внимания.';}
