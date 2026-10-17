@@ -180,10 +180,10 @@
 
   <div class="col">
     <header class="hd">
-      <a class="nm" href="/" title="На главную">METATRON</a>
+      <a class="nm" href="https://metatronti.com/" title="На главную">METATRON</a>
       <span class="dt" id="dt">11.09 · 04:12 UTC</span>
       <span class="demo" id="demoBadge">демо · пример</span>
-      <a class="ea" href="/#pricing">Ранний доступ</a>
+      <a class="ea" href="https://metatronti.com/#pricing">Ранний доступ</a>
     </header>
 
     <main class="body">
@@ -376,7 +376,9 @@
     if(d.generated_utc){
       set("dt", d.generated_utc);
       var b=document.getElementById("demoBadge");
-      if(b){ b.textContent="данные рынка · "+d.generated_utc.split("· ").pop(); b.className="demo live"; }
+      // live — живая отдача при показе; иначе это сохранённый пример (Pages), не выдаём его за живое
+      if(b){ if(d.live){ b.textContent="данные рынка · "+d.generated_utc.split("· ").pop(); b.className="demo live"; }
+             else { b.textContent="пример · живые данные — при демонстрации"; b.className="demo"; } }
     }
     verdict(d.verdict); pulse(d.pulse); measured(d); gauges(d.gauges);
     ideas(d.ideas);

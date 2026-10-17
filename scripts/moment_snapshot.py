@@ -161,11 +161,12 @@ def _dropped(d: dict) -> str:
     return f"отсеяно {len(skipped)}: {parts}"
 
 
-def build(d: dict) -> dict:
+def build(d: dict, live: bool = False) -> dict:
+    """live=True — живая отдача терминалом при показе; False — файл-пример для Pages (страница так и подпишет)."""
     now = int(time.time())
     utc = datetime.now(timezone.utc).strftime("%d.%m · %H:%M UTC")
     out = {
-        "generated": now, "generated_utc": utc, "data_ts": d.get("ts_data") or d.get("ts"),
+        "generated": now, "generated_utc": utc, "data_ts": d.get("ts_data") or d.get("ts"), "live": live,
         "verdict": _verdict(d),
         "pulse": _pulse(d),
         "gauges": _gauges(d),

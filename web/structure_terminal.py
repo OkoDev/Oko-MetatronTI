@@ -453,15 +453,47 @@ _agenda_cache = {"ts": 0.0, "data": None}
 _AGENDA_TTL = 45.0
 
 
+async def _agenda_cached():
+    """Повестка с кэшем 45с — один расчёт на всех: и терминал, и /moment, и пульс."""
+    now = time.time()
+    if not (_agenda_cache["data"] and now - _agenda_cache["ts"] < _AGENDA_TTL):
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(_POOL, _agenda)   # не держим event loop на расчёте
+        _agenda_cache.update(ts=now, data=data)
+    return _agenda_cache["data"]
+
+
 async def api_agenda(_req):
     """GET /api/agenda — повестка дня: режим, светофор, готовые планы сделок (кэш 45с)."""
-    now = time.time()
-    if _agenda_cache["data"] and now - _agenda_cache["ts"] < _AGENDA_TTL:
-        return web.json_response(_agenda_cache["data"])
-    loop = asyncio.get_running_loop()
-    data = await loop.run_in_executor(_POOL, _agenda)   # не держим event loop на расчёте
-    _agenda_cache.update(ts=now, data=data)
-    return web.json_response(data)
+    return web.json_response(await _agenda_cached())
+
+
+# /moment при показе через туннель: та же страница, что на Pages, но данные живые с этой машины.
+# Публичный /moment на Pages показывает сохранённый пример (live=false) — когда туннель выключен.
+_MOMENT_HTML = os.path.join("docs", "product", "deploy", "public", "moment", "index.html")
+_moment_last = {"data": None}
+
+
+async def moment_redirect(_req):
+    raise web.HTTPFound("/moment/")      # страница грузит данные относительным ./agenda.json
+
+
+async def moment_page(_req):
+    """GET /moment/ — публичная Повестка (тот же HTML, что на metatronti.com/moment)."""
+    return web.FileResponse(_MOMENT_HTML, headers={"Cache-Control": "no-store"})
+
+
+async def moment_data(_req):
+    """GET /moment/agenda.json — живая Повестка в формате /moment. Нет данных — последний удачный снимок."""
+    if "scripts" not in sys.path:
+        sys.path.insert(0, "scripts")
+    import moment_snapshot as MS
+    d = await _agenda_cached()
+    if d.get("data_ok") is not False and (d.get("breadth") or {}).get("universe"):
+        _moment_last["data"] = MS.build(d, live=True)
+    if _moment_last["data"] is None:
+        return web.json_response({"error": "нет данных об объёме торгов — повестка не собрана"}, status=503)
+    return web.json_response(_moment_last["data"], headers={"Cache-Control": "no-store"})
 
 
 async def api_screener(req):
@@ -4663,6 +4695,9 @@ def main():
     app.router.add_get("/api/screener", api_screener)
     app.router.add_get("/api/breadth", api_breadth)
     app.router.add_get("/api/agenda", api_agenda)
+    app.router.add_get("/moment", moment_redirect)
+    app.router.add_get("/moment/", moment_page)
+    app.router.add_get("/moment/agenda.json", moment_data)
     app.router.add_get("/api/scoreboard", api_scoreboard)
     app.router.add_get("/api/inplay", api_inplay)
     app.router.add_post("/api/filter", api_filter)
