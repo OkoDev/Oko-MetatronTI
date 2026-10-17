@@ -22,6 +22,11 @@ from aiohttp import web
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# Туннель cloudflared (12.10.2026: публичные имена домена) сам сидит на этой машине, поэтому запрос из
+# интернета приходит с 127.0.0.1, а Next-прокси :3000 переписывает Host на локальный и curl не шлёт
+# Origin — все три прежние проверки проходят (проверено: POST через cmd.* отдавал 200).
+# Эти заголовки ставит край Cloudflare, убрать их снаружи нельзя.
+_TUNNEL_HEADERS = ("CF-Connecting-IP", "CF-Ray", "Cdn-Loop")
 
 
 def _hostname(value: str) -> str:
@@ -34,6 +39,11 @@ def _hostname(value: str) -> str:
 
 def is_local_origin(req: web.Request) -> bool:
     """True, если запрос пришёл со страницы на этой же машине (или вообще не из браузера)."""
+    if any(h in req.headers for h in _TUNNEL_HEADERS):
+        return False
+    fwd_host = req.headers.get("X-Forwarded-Host")
+    if fwd_host and _hostname(fwd_host) not in _LOCAL_HOSTS:
+        return False
     if _hostname(req.headers.get("Host", "")) not in _LOCAL_HOSTS:
         return False
     origin = req.headers.get("Origin")

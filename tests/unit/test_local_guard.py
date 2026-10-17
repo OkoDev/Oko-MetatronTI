@@ -37,6 +37,23 @@ def test_foreign_requests_blocked(host, origin):
     assert not is_local_origin(_req(host=host, origin=origin))
 
 
+@pytest.mark.parametrize("extra", [
+    {"CF-Connecting-IP": "203.0.113.7"},            # туннель cloudflared: сокет локальный, клиент — интернет
+    {"Cf-Ray": "8c1f-AMS"},                         # регистр заголовка не важен
+    {"Cdn-Loop": "cloudflare"},
+    {"X-Forwarded-Host": "cmd.example.com"},     # Next-прокси переписал Host, но помнит исходный
+])
+def test_tunnel_requests_blocked(extra):
+    req = make_mocked_request("POST", "/api/trade", headers={"Host": "127.0.0.1:8001", **extra})
+    assert not is_local_origin(req)
+
+
+def test_local_next_proxy_still_passes():
+    req = make_mocked_request("POST", "/api/settings", headers={
+        "Host": "127.0.0.1:8001", "Origin": "http://localhost:3000", "X-Forwarded-Host": "localhost:3000"})
+    assert is_local_origin(req)
+
+
 def _run(req):
     async def handler(_):
         return web.Response(text="ok")
