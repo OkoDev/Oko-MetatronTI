@@ -7,7 +7,6 @@ import logging.handlers
 import platform
 import sys
 import os
-import atexit
 
 # ── Monkey-patch: aiohttp 3.9+ убрал loop=, ccxt всё ещё передаёт ──
 import aiohttp.connector as _aiohttp_connector
@@ -57,65 +56,18 @@ except Exception:
 # Single-instance lock
 # ==============================
 _LOCK_FILE = os.path.join(os.path.dirname(__file__) or ".", "bot_instance.lock")
+_LOCK_WAIT_PM2_S = 90     # под pm2 занятый замок ЖДЁМ: старый экземпляр при рестарте доживает секунды (instance_lock)
 
 
-def _lock_owner_alive(lock_path: str) -> bool:
-    """PID из lock-файла жив И это python-процесс. После BSOD/kill atexit не срабатывает —
-    lock сиротеет, и автозапуск упирался в мёртвый файл (Егор удалял руками, 08.07)."""
-    import subprocess
-    try:
-        pid = int(open(lock_path, encoding="utf-8").read().strip() or 0)
-    except Exception:
-        return False                                  # пустой/битый lock = сирота
-    if pid <= 0:
-        return False
-    try:
-        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                             capture_output=True, text=True, timeout=10).stdout
-        return "python" in (out or "").lower()        # жив и питон → настоящий бот
-    except Exception:
-        return True                                   # проверить не смогли → lock не забираем
-
-
-def _acquire_single_instance_lock(lock_path: str = _LOCK_FILE) -> bool:
-    for attempt in (1, 2):
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(str(os.getpid()))
-
-            def _cleanup():
-                try:
-                    if os.path.exists(lock_path):
-                        os.remove(lock_path)
-                except Exception:
-                    pass
-
-            atexit.register(_cleanup)
-            return True
-        except FileExistsError:
-            if attempt == 1 and not _lock_owner_alive(lock_path):
-                logging.warning("Lock-файл ОСИРОТЕЛ (владелец мёртв — BSOD/kill?) — забираю и стартую.")
-                try:
-                    os.remove(lock_path)
-                    continue                          # второй заход возьмёт lock
-                except Exception:
-                    pass
-            return False
-        except Exception:
-            logging.warning("Не удалось создать lock-файл. Продолжаю без блокировки.")
-            return True
-    return False
-
-
-def _start_pm2_parent_watchdog(lock_path: str = _LOCK_FILE) -> None:
+def _start_pm2_parent_watchdog() -> None:
     """Сторож родителя под pm2 (15.09.2026, цикл рестартов 22 и 43 за вечер).
 
     Под pm2 бот — потомок node-обёртки scripts/bot_pm2.js. На Windows pm2 stop/restart завершает обёртку безусловно
     (обработчики сигналов node не срабатывают), а python-потомок оставался СИРОТОЙ с bot_instance.lock: новый
     экземпляр видел живой lock и выходил, pm2 поднимал его снова — по кругу. Обёртка передаёт свой PID в
-    OKO_PM2_WRAPPER_PID; держим хэндл её процесса (PID не переиспользуется) и ждём её завершения — тогда снимаем
-    lock и выходим сами. Вне pm2 (запуск из терминала) переменной нет — сторож не запускается."""
+    OKO_PM2_WRAPPER_PID; держим хэндл её процесса (PID не переиспользуется) и ждём её завершения — тогда выходим
+    сами (замок ОС снимется со смертью процесса). Вне pm2 (запуск из терминала) переменной нет — сторож не запускается.
+    17.10: запускается ДО ожидания замка — иначе ждущий экземпляр при `pm2 stop` дождался бы замка уже сиротой."""
     ppid = int(os.environ.get("OKO_PM2_WRAPPER_PID") or 0)
     if ppid <= 0 or platform.system() != "Windows":
         return
@@ -138,12 +90,7 @@ def _start_pm2_parent_watchdog(lock_path: str = _LOCK_FILE) -> None:
         if rc != 0:                                             # не WAIT_OBJECT_0 — ожидание сломалось, НЕ выходим вслепую
             logging.error("[pm2-watch] ожидание обёртки вернуло %s (ошибка %s) — сторож остановлен", rc, ctypes.get_last_error())
             return
-        logging.critical("[pm2-watch] обёртка pm2 (pid=%s) завершилась — выхожу, чтобы не остаться сиротой с lock", ppid)
-        try:
-            if open(lock_path, encoding="utf-8").read().strip() == str(os.getpid()):
-                os.remove(lock_path)
-        except Exception:
-            pass
+        logging.critical("[pm2-watch] обёртка pm2 (pid=%s) завершилась — выхожу, чтобы не остаться сиротой", ppid)
         os._exit(3)
 
     threading.Thread(target=_watch, daemon=True, name="pm2-parent-watch").start()
@@ -269,13 +216,18 @@ if __name__ == "__main__":
 
     # 🔴 15.09: lock — ПЕРВЫМ. Раньше бэкап БД и LLM-хуки шли до проверки, и каждый отбитый дубль в цикле рестартов
     # заново спаунил daily_pipeline/weekly_digest/obsidian_indexer/task_linker.
-    if not _acquire_single_instance_lock():
-        print("⚠️ Бот уже запущен (обнаружен lock-файл). Закрываю второй экземпляр.")
-        sys.exit(1)
+    # 🔴 17.10: замок ОС вместо «PID в файле» (гонка 15.10 → два бота 45 ч) — core/infra/instance_lock.py
+    from core.infra import instance_lock
     _start_pm2_parent_watchdog()
+    if not instance_lock.acquire(_LOCK_FILE, wait_s=_LOCK_WAIT_PM2_S if os.environ.get("OKO_PM2_WRAPPER_PID") else 0):
+        print("⚠️ Бот уже запущен (замок занят другим экземпляром). Закрываю второй экземпляр.")
+        sys.exit(1)
 
     _backup_database()
     _spawn_llm_background_jobs()
+
+    from core.infra import mem_census
+    mem_census.start()
 
     from bot.core.bot import TradingAlertBot
     TradingAlertBot().run()

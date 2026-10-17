@@ -197,10 +197,16 @@ def main() -> None:
     except Exception as e:
         print(f"[HB-WD] TG: {e}")
     try:
-        _pm2("restart", "oko-bot", timeout=60)
+        # 🔴 17.10: stop → пауза → start, НЕ restart. pm2 7 в restart запускает новый контейнер сразу после опроса
+        # «процесс мёртв», а событие exit старого под нагрузкой приходит позже — God.handleExit принимает его за
+        # падение ТЕКУЩЕГО и спаунит ещё один, текущий остаётся сиротой (15.10 06:32 → два бота 45 ч).
+        # После stop статус stopped — запоздавший exit ничего не рестартует.
+        _pm2("stop", "oko-bot", timeout=60)
+        time.sleep(10)
+        _pm2("start", "oko-bot", timeout=60)
         STATE.parent.mkdir(parents=True, exist_ok=True)
         STATE.write_text(str(time.time()))
-        print("[HB-WD] ✅ pm2 restart oko-bot выполнен")
+        print("[HB-WD] ✅ pm2 stop+start oko-bot выполнен")
     except Exception as e:
         print(f"[HB-WD] restart FAILED: {e}")
 

@@ -233,6 +233,7 @@ class OkoConfig(BaseModel):
     # Сфера 1 (N15, 29.09): bot_htf off|shadow|on — старшие ТФ бота из хранилища закрытых баров.
     market_store: Dict[str, Any] = Field(default_factory=dict)
     cube_hub: Dict[str, Any] = Field(default_factory=dict)       # ADR-003: хаб шины Куба
+    diagnostics: Dict[str, Any] = Field(default_factory=dict)    # 17.10: перепись памяти бота (core/infra/mem_census.py)
 
     # ── Валидация (поглощает config_validator.py) ──
 

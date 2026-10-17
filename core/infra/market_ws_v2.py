@@ -49,6 +49,25 @@ def _dedup_interval(tf: str) -> float:
     return _LIVE_DEDUP_BY_TF.get(tf, _LIVE_DEDUP_DEFAULT)
 
 
+def _exit_with_parent() -> None:
+    """🔴 17.10: воркер умирает вместе с ботом. daemon=True гасит его только при НОРМАЛЬНОМ выходе бота, а бот под pm2
+    уходит через os._exit (сторож обёртки) или kill: воркер 8280 пережил бота на 49 мин сиротой (686 МБ + WS к бирже).
+    Ждём на хэндле процесса-родителя (sentinel) — срабатывает при любой его смерти."""
+    import multiprocessing
+    import os
+    from multiprocessing.connection import wait
+
+    parent = multiprocessing.parent_process()
+    if parent is None:
+        return
+
+    def _watch():
+        wait([parent.sentinel])
+        os._exit(0)
+
+    threading.Thread(target=_watch, daemon=True, name="mws-parent-watch").start()
+
+
 def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = False,
                 bind_prefix: str = "") -> None:
     """Standalone-функция для multiprocessing.Process.
@@ -70,6 +89,7 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = 
                 _h.close()
             except Exception:
                 pass
+    _exit_with_parent()
 
     import asyncio as _aio
     import threading as _thr
