@@ -216,49 +216,53 @@ def _state(r: dict) -> dict:
     wt = (f"15m {_zone(r.get('wt1_15m'))} · 1h {_zone(r.get('wt1_1h'))} · 4h {_zone(r.get('wt1_4h'))} · "
           f"1d {_zone(r.get('wt1_1d'))}")
     ev = [n for c, n in (("wt_cross_up_15m_in_h", "кросс вверх"), ("wt_cross_dn_15m_in_h", "кросс вниз"),
-                         ("wt_enter_os_15m_in_h", "вход в OS"), ("wt_enter_ob_15m_in_h", "вход в OB")) if flag(c)]
-    smc = [n for c, n in (("ote_long_1h", "OTE лонга 1h"), ("ote_short_1h", "OTE шорта 1h"),
-                          ("ote_long_4h__from_4h", "OTE лонга 4h"), ("ote_short_4h__from_4h", "OTE шорта 4h"),
+                         ("wt_enter_os_15m_in_h", "вход в перепроданность (OS)"),
+                         ("wt_enter_ob_15m_in_h", "вход в перекупленность (OB)")) if flag(c)]
+    smc = [n for c, n in (("ote_long_1h", "зона интереса лонга 1h"), ("ote_short_1h", "зона интереса шорта 1h"),
+                          ("ote_long_4h__from_4h", "зона интереса лонга 4h"),
+                          ("ote_short_4h__from_4h", "зона интереса шорта 4h"),
                           ("discount_4h__from_4h", "discount 4h"), ("premium_4h__from_4h", "premium 4h")) if flag(c)]
     liq = (f"до ликвидности снизу {_f(r.get('liq_dn_dist_pct_1h'))}% · сверху {_f(r.get('liq_up_dist_pct_1h'))}%")
-    piv = [n for c, n in (("pivot_above_PP_1D", "выше PP дня"), ("pivot_below_PP_1D", "ниже PP дня"),
-                          ("pivot_above_R1_1D", "выше R1 дня"), ("pivot_below_S1_1D", "ниже S1 дня"),
-                          ("pivot_above_PP_1W", "выше PP недели"), ("pivot_below_PP_1W", "ниже PP недели")) if flag(c)]
+    piv = [n for c, n in (("pivot_above_PP_1D", "выше уровня дня (PP)"), ("pivot_below_PP_1D", "ниже уровня дня (PP)"),
+                          ("pivot_above_R1_1D", "выше сопротивления R1 дня"),
+                          ("pivot_below_S1_1D", "ниже поддержки S1 дня"),
+                          ("pivot_above_PP_1W", "выше уровня недели (PP)"),
+                          ("pivot_below_PP_1W", "ниже уровня недели (PP)")) if flag(c)]
     ws = r.get("w_side")
     big = None
     if ws is not None and np.isfinite(ws) and ws != 0:
-        wave = (f"видна пятёрка → сетап {'ЛОНГ' if ws > 0 else 'ШОРТ'}"
+        wave = (f"видна пятая волна → сетап {'ЛОНГ' if ws > 0 else 'ШОРТ'}"
                 f"{' (полное ядро)' if flag('w_core_full') else ''} · откат {_band_txt(r.get('w_retr'))} · "
                 f"возраст {_f(r.get('w_age_h'), 0)} ч")
         d5 = r.get("w_leg_depth5")
         if d5 is not None and np.isfinite(d5):
             px = lambda v: f"{v:.6g}"                                                        # noqa: E731
-            big = (f"{px(r['w_leg_origin'])} → {px(r['w_leg_ext'])} (её корректирует импульс) · пятая на "
+            big = (f"{px(r['w_leg_origin'])} → {px(r['w_leg_ext'])} (его корректирует волновой импульс) · пятая волна на "
                    f"{_band_txt(d5)} · цена сейчас {_f(r.get('w_leg_depth_now'), 2)}")
     else:
-        wave = "пятёрки ядра 4h не видно"
+        wave = "пятой волны ядра на 4h не видно"
     pr = r.get("atr_prank_1h")
     out = {
         "WT": wt + (f" · за час 15m: {', '.join(ev)}" if ev else ""),
         "ATR-тренд": f"1h {tr('atr_up_1h')} · 4h {tr('atr_up_4h__from_4h')} · 1d {tr('atr_up_1d__from_1d')}",
-        "Волатильность": (f"ATR 1h — {pr * 100:.0f}-й перцентиль своей истории" if pr is not None and np.isfinite(pr)
+        "Волатильность": (f"ATR 1h выше, чем в {pr * 100:.0f}% истории монеты" if pr is not None and np.isfinite(pr)
                           else "—"),
         "SMC": (", ".join(smc) + " · " if smc else "") + liq,
-        "Пивоты": ", ".join(piv) or "—",
+        "Уровни": ", ".join(piv) or "—",
         "Волна ядра": wave,
     }
     # 08.10 «одна нога в другой»: старшая степень — та, что корректирует импульс (как разбор и Oko-WAVES);
     # текущая — младшая, при видимой пятёрке обычно та, на вершине которой начался сам импульс
     if big:
-        out["Нога старшей степени"] = big
+        out["Импульс старшей степени"] = big
     out.update({
-        "Текущая нога": (f"вверх {_band_txt(r.get('legup_depth'))} · вниз {_band_txt(r.get('legdn_depth'))}"
-                         + (" (младшая степень)" if big else "")),
-        "Режим": f"дрейф вселенной 30д {_f(r.get('mkt_drift30'), 1, True)}%",
+        "Текущий импульс": (f"вверх {_band_txt(r.get('legup_depth'))} · вниз {_band_txt(r.get('legdn_depth'))}"
+                            + (" (младшая степень)" if big else "")),
+        "Режим": f"движение рынка за 30д {_f(r.get('mkt_drift30'), 1, True)}%",
         "Позиционирование": (f"розница L/S {_f(r.get('pos_retail_ls'), 2)} · топы {_f(r.get('pos_top_ls'), 2)} · "
                              f"ΔOI 24ч {_f(r.get('pos_doi_24h'), 1, True)}%"
                              if r.get("pos_retail_ls") is not None and np.isfinite(r.get("pos_retail_ls"))
-                             else "нет свежих (Binance отдаёт метрики по вчера)"),
+                             else "нет свежих данных (источник отдаёт только вчерашние)"),
     })
     return out
 
@@ -319,20 +323,20 @@ def _stop_level(side: str | None, rates: dict | None, hits: list[dict], base: di
         m, e, l_ = r.get("mean"), r.get("mean_23_24"), r.get("mean_25_26")
         if m is not None:
             d = m - b
-            why.append(f"{nm} в похожих часах {m:+.2f}% за 24 ч после коста, в обычный час {b:+.2f}% "
-                       f"→ {'хуже' if d < 0 else 'лучше'} обычного на {abs(d):.2f} п.п.")
+            why.append(f"{nm} в похожих ситуациях {m:+.2f}% за 24 ч после издержек, в среднем {b:+.2f}% "
+                       f"→ {'хуже' if d < 0 else 'лучше'} среднего на {abs(d):.2f} п.п.")
             stable_bad = e is not None and l_ is not None and e < b and l_ < b
             stable_good = e is not None and l_ is not None and e > b and l_ > b
             if d < -REL and stable_bad:
                 lvl = "stop"
-                why.append(f"хуже обычного и в 2023-24 ({e:+.2f}%), и в 2025-26 ({l_:+.2f}%)")
+                why.append(f"хуже среднего и в 2023-24 ({e:+.2f}%), и в 2025-26 ({l_:+.2f}%)")
             elif d < -REL:
                 lvl = "warn"
             elif d > REL and stable_good:
                 lvl = "better"
-                why.append(f"лучше обычного и в 2023-24 ({e:+.2f}%), и в 2025-26 ({l_:+.2f}%) — но это не сигнал")
+                why.append(f"лучше среднего и в 2023-24 ({e:+.2f}%), и в 2025-26 ({l_:+.2f}%) — но это не сигнал")
     elif rates is not None:
-        why.append(f"похожих дней мало ({rates.get('n_days', 0)}) — база не говорит ничего")
+        why.append(f"похожих дней мало ({rates.get('n_days', 0)}) — сравнивать не с чем")
     for h in hits:
         if h["side"] == side and h["status"] == "⚠️":
             lvl = "stop" if lvl == "stop" else "warn"
@@ -380,20 +384,21 @@ def card(base: str, side: str | None = None, stop: float | None = None) -> dict:
         "usual": None if sb is None else {k: round(v, 3) for k, v in sb.items()},
         "verdicts": hits, "stop": _stop_level(side, rates, hits, sb), "side": side,
         "cells_built": None if C is None else C.attrs.get("built"),
-        "note": "Базовая частота, не сигнал: ячейка не проходила карточку вердикта. Часы зависимы — смотреть ДНИ.",
+        "note": ("Базовая частота, не сигнал: эта ситуация не проходила проверку вердикта. "
+                 "Соседние часы похожи друг на друга — надёжнее число дней."),
     }
 
 
 def summary_text(c: dict) -> str:
     """Короткий текст для окна подтверждения ордера."""
     L = [f"КАРТА {c['base']} · закрытый час {str(c['hour'])[:16]} UTC"]
-    for k in ("WT", "Волна ядра", "Нога старшей степени", "Текущая нога", "Режим"):
+    for k in ("WT", "Волна ядра", "Импульс старшей степени", "Текущий импульс", "Режим"):
         if k in c["state"]:
             L.append(f"{k}: {c['state'][k]}")
     r, u = c.get("rates"), c.get("usual") or {}
     if r:
         lo, sh = r["long"], r["short"]
-        L.append(f"Похожих: {r['n_days']} дн., {r['n_coins']} монет · 24ч после коста: "
+        L.append(f"Похожих: {r['n_days']} дн., {r['n_coins']} монет · 24ч после издержек: "
                  f"лонг {_f(lo['mean'], 2, True)}% (обычно {_f(u.get('long'), 2, True)}%) · "
                  f"шорт {_f(sh['mean'], 2, True)}% (обычно {_f(u.get('short'), 2, True)}%)")
     else:
@@ -406,8 +411,10 @@ def summary_text(c: dict) -> str:
     return "\n".join(L)
 
 
-LEVEL_TXT = {"better": "✅ ЛУЧШЕ ОБЫЧНОГО для этой стороны (не сигнал)", "same": "➖ КАК ОБЫЧНО",
-             "warn": "⚠️ ХУЖЕ ОБЫЧНОГО для этой стороны", "stop": "⛔ СТАБИЛЬНО ХУЖЕ ОБЫЧНОГО для этой стороны"}
+LEVEL_TXT = {"better": "✅ в похожих ситуациях ЛУЧШЕ СРЕДНЕГО для этой стороны (не сигнал)",
+             "same": "➖ в похожих ситуациях — КАК В СРЕДНЕМ",
+             "warn": "⚠️ в похожих ситуациях ХУЖЕ СРЕДНЕГО для этой стороны",
+             "stop": "⛔ в похожих ситуациях СТАБИЛЬНО ХУЖЕ СРЕДНЕГО для этой стороны"}
 
 
 if __name__ == "__main__":

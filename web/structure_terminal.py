@@ -2164,13 +2164,16 @@ async function load(sym,side){
  if(c.error){st.textContent='❌ '+c.error;return;}
  st.textContent='закрытый час '+String(c.hour).slice(0,16)+' UTC · цена '+f(c.price,6);
  var h='';
- if(c.stop&&c.stop.level){var m={ok:'✅ база не против — это НЕ сигнал',warn:'⚠️ ПРОТИВ БАЗЫ',stop:'⛔ УСТОЙЧИВО ПРОТИВ БАЗЫ'};
+ // уровни situation_card._stop_level: better/same/warn/stop (ключей ok не бывает — было «undefined»)
+ if(c.stop&&c.stop.level){var m={better:'✅ в похожих ситуациях лучше среднего — это НЕ сигнал',
+  same:'➖ в похожих ситуациях — как в среднем',warn:'⚠️ в похожих ситуациях хуже среднего',
+  stop:'⛔ в похожих ситуациях стабильно хуже среднего'};
   h+='<div class="card lvl '+c.stop.level+'">'+m[c.stop.level]+((c.stop.why||[]).length?'<div style="font-weight:400;font-size:13px;margin-top:6px">'+c.stop.why.map(esc).join('<br>')+'</div>':'')+'</div>';}
  h+='<div class=card><h2>СОСТОЯНИЕ СФЕР — '+esc(c.base)+'</h2>';
  for(var k in c.state)h+='<div class=row><b>'+esc(k)+'</b><span>'+esc(c.state[k])+'</span></div>';
  h+='</div>';
  var r=c.rates;
- if(r){h+='<div class=card><h2>ПОХОЖИЕ ЧАСЫ 2023→СЕЙЧАС · '+r.n_days+' дн. · '+r.n_coins+' монет · '+r.n+' ч</h2><table><tr><th></th><th>средн. 24ч после коста</th><th>в плюс</th><th>худшие 10%</th><th>лучшие 10%</th><th>стоп/цель 4/8 ATR</th><th>2023-24</th><th>2025-26</th></tr>';
+ if(r){h+='<div class=card><h2>ПОХОЖИЕ СИТУАЦИИ 2023→СЕЙЧАС · '+r.n_days+' дн. · '+r.n_coins+' монет · '+r.n+' ч</h2><table><tr><th></th><th>средн. за 24ч после издержек</th><th>в плюс</th><th>худшие 10%</th><th>лучшие 10%</th><th>стоп/цель 4/8 ATR</th><th>2023-24</th><th>2025-26</th></tr>';
   [['лонг','long'],['шорт','short']].forEach(function(x){var s=r[x[1]];
    h+='<tr><td>'+x[0]+'</td><td>'+f(s.mean,2,1)+'%</td><td>'+f(s.p_up*100,0)+'%</td><td>'+f(s.p10,2,1)+'%</td><td>'+f(s.p90,2,1)+'%</td><td>'+f(s.geo,2,1)+'%</td><td>'+f(s.mean_23_24,2,1)+'%</td><td>'+f(s.mean_25_26,2,1)+'%</td></tr>';});
   h+='</table>';
@@ -2221,7 +2224,7 @@ def _nav(active):
              ("/cockpit", "Кокпит", "состояние рынка подробно"),
              ("/filter", "Фильтр", "конструктор условий"),
              ("/monitor", "Монитор", "сетка графиков"),
-             ("/waves", "Волны", "журнал тени ядра волн: скрины и оценка разметки"),
+             ("/waves", "Волны", "журнал наблюдения ядра волн: скрины и оценка разметки"),
              ("/situation", "Карта", "ситуационная карта монеты: состояние сфер и базовые частоты"),
              ("/guide", "Инструкция", "как всем этим пользоваться")]
     out = ['<nav class=nav aria-label="Разделы терминала"><span class=brand>OKO</span>']
@@ -3231,7 +3234,7 @@ __NAV__
 <div id=bar>
   <span class=grp><b>сетка</b><span class="bt" data-g=4>2×2</span><span class="bt on" data-g=9>3×3</span><span class="bt" data-g=16>4×4</span></span>
   <span class=grp><b>тф</b><span class="bt" data-tf=3m>3m</span><span class="bt" data-tf=5m>5m</span><span class="bt on" data-tf=15m>15m</span><span class="bt" data-tf=1h>1h</span><span class="bt" data-tf=4h>4h</span><span class="bt" data-tf=1d>1d</span></span>
-  <span class=grp><b>состав</b><span class="bt on" id=b_live>live-фильтр</span><span class="bt" id=b_pin>закреплено</span><span class="bt" id=b_pos>мои позиции<span id=posn></span></span><span class="bt" id=b_play title="монеты из кокпита: радар 🚀🌱🔨 · OTE 🎯 · DC 🤖 · хайп 🔥">🎯 в игре<span id=playn></span></span><span class="bt" id=b_fav title="избранное: ★ в шапке окна добавляет/убирает монету">★ избранное<span id=favn></span></span></span>
+  <span class=grp><b>состав</b><span class="bt on" id=b_live>live-фильтр</span><span class="bt" id=b_pin>закреплено</span><span class="bt" id=b_pos>мои позиции<span id=posn></span></span><span class="bt" id=b_play title="монеты из кокпита: радар 🚀🌱🔨 · зона интереса 🎯 · ИИ-советник 🤖 · хайп 🔥">🎯 в игре<span id=playn></span></span><span class="bt" id=b_fav title="избранное: ★ в шапке окна добавляет/убирает монету">★ избранное<span id=favn></span></span></span>
   <span class="grp dd" id=lvgrp><span class="bt" id=b_lv>уровни Куба</span><span class="bt ddt" id=b_lv_dd role=button tabindex=0 aria-label="Выбрать слои" title="какие элементы рисовать">▾</span>
     <div class=ddm id=lvmenu role=group aria-label="Слои уровней Куба"></div></span>
   <span class=grp><span class="bt" id=b_wt>WT</span><span class="bt" id=b_atr>ATRTrend</span><span class="bt" id=b_wv title="волновая разметка ядра: 0-1-2-3-4-5, линия 2-4, канал, цель (конец волны 4), стоп, коррекции по фибо. На 1h/4h — своя разметка, на младших ТФ — 4h">Волны</span></span>
@@ -3239,7 +3242,7 @@ __NAV__
     <div class=ddm id=almenu role=group aria-label="Типы алертов"></div></span>
   <span class=grp><b>поиск</b><input id=q_sym list=symlist placeholder="BTC, SEI…" autocomplete=off
     aria-label="Найти монету и добавить в избранное" style="width:96px"><datalist id=symlist></datalist></span>
-  <span class=grp><b>счёт</b><span class="bt on" id=b_acc_vst>VST</span><span class="bt" id=b_acc_live>LIVE</span><span id=bal style=color:var(--dim);font-size:11px>—</span></span>
+  <span class=grp><b>счёт</b><span class="bt on" id=b_acc_vst title="демо-счёт биржи">DEMO</span><span class="bt" id=b_acc_live>LIVE</span><span id=bal style=color:var(--dim);font-size:11px>—</span></span>
   <span class=grp><b>рисовать</b><span class="bt" data-t=hl role=button tabindex=0 aria-label="Горизонтальный уровень" title="горизонтальный уровень">↔</span><span class="bt" data-t=tl role=button tabindex=0 aria-label="Трендовая линия" title="трендовая линия">╱</span><span class="bt" data-t=rc role=button tabindex=0 aria-label="Прямоугольник" title="прямоугольник">▭</span><span class="bt" data-t=fb role=button tabindex=0 aria-label="Фибо-сетка" title="фибо-сетка">fib</span><span class="bt" id=b_clr role=button tabindex=0 aria-label="Стереть разметку" title="стереть разметку окна">🗑</span></span>
   <span class=grp><span class="bt" id=pg_p>‹</span><span id=pg style=color:var(--dim);font-size:12px>1/1</span><span class="bt" id=pg_n>›</span></span>
   <span style=color:var(--dim);font-size:12px><b id=cnt style=color:var(--gold)>0</b> монет <span id=age></span></span>
@@ -3252,9 +3255,9 @@ var S={syms:[],pinned:null,page:0,grid:9,tf:'15m',live:true,lv:false,wt:false,at
 var PIVC={PP:'#ffeb3b',R1:'#ef5350',R2:'#ef5350',R3:'#ef5350',S1:'#26a69a',S2:'#26a69a',S3:'#26a69a'};
 // Слои «уровней Куба» — каждый включается отдельно (Егор 16.08): на графике должно быть только то,
 // что нужно СЕЙЧАС, иначе окно превращается в кашу из зон и линий.
-var LAYERS=[['СТРУКТУРА',null],['leg','нога OKO-SM (SH/WL)'],['brk','сломы swing (CHoCH/BOS)'],
- ['brk_int','сломы internal (мелкие)'],['ЗОНЫ',null],['fvg','FVG'],['ob','Order Blocks'],
- ['eq','EQH / EQL'],['УРОВНИ',null],['piv_d','пивоты дневные'],['piv_w','пивоты недельные'],
+var LAYERS=[['СТРУКТУРА',null],['leg','импульс OKO (H/L)'],['brk','сломы структуры крупные (CHoCH/BOS)'],
+ ['brk_int','сломы структуры мелкие'],['ЗОНЫ',null],['fvg','имбаланс (FVG)'],['ob','Ордер Блоки (OB)'],
+ ['eq','равные вершины / донья (EQH / EQL)'],['УРОВНИ',null],['piv_d','уровни дня (пивоты)'],['piv_w','уровни недели (пивоты)'],
  ['badges','бейджи в шапке']];
 var LV={};try{LV=JSON.parse(localStorage.getItem('oko_layers')||'null')||{};}catch(e){}
 LAYERS.forEach(function(l){if(l[1]&&LV[l[0]]===undefined)LV[l[0]]=true;});   // по умолчанию всё вкл
@@ -3427,7 +3430,7 @@ function drawOvNow(c){
    g.strokeStyle='#ffa726';g.lineWidth=1.4;g.globalAlpha=.85;
    g.beginPath();g.moveTo(la,p0);g.lineTo(le,p1);g.stroke();g.globalAlpha=1;
    g.fillStyle='#ffa726';g.font='bold 9px -apple-system,Segoe UI,sans-serif';
-   g.fillText(v.leg.side=='long'?'SH':'WL',Math.min(le+3,GW-18),p1+3);}}
+   g.fillText(v.leg.side=='long'?'H':'L',Math.min(le+3,GW-18),p1+3);}}   // конец импульса: вершина / дно
  (v.brk||[]).forEach(function(b){
   if(b.int?!LV.brk_int:!LV.brk)return;          // swing и internal включаются отдельно
   var a=x0(b.t0),e=xE(b.t1),p=y(b.p);
@@ -3779,7 +3782,7 @@ async function sendOrder(c,side){
  var t=c.trade,px=r.px;
  if(side=='BUY'&&!(t.sl<px&&px<t.tp)){alert('для LONG: SL под ценой, TP над ценой');return;}
  if(side=='SELL'&&!(t.tp<px&&px<t.sl)){alert('для SHORT: TP под ценой, SL над ценой');return;}
- var txt=side+' '+c.sym+' · '+S.acc.toUpperCase()+' · x'+r.lev+'\\nобъём $'+r.notional.toFixed(0)+
+ var txt=side+' '+c.sym+' · '+(S.acc=='live'?'LIVE':'DEMO')+' · x'+r.lev+'\\nобъём $'+r.notional.toFixed(0)+
   ' (маржа $'+r.margin.toFixed(2)+')\\nSL '+(+t.sl).toPrecision(6)+' · TP '+(+t.tp).toPrecision(6)+
   '\\nриск $'+r.risk.toFixed(2)+' · RR '+r.rr.toFixed(2)+
   '\\nсвободно на счёте $'+r.free.toFixed(2);
@@ -3792,10 +3795,10 @@ async function sendOrder(c,side){
  var lvl=(card&&card.stop&&card.stop.level)||null;
  function logDec(a){try{fetch('/api/situation/log',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({sym:c.sym,side:side,mode:S.acc,level:lvl,action:a})});}catch(e){}}
- if(lvl=='stop'){var ans=prompt('⛔ ВХОД УСТОЙЧИВО ПРОТИВ БАЗЫ\\n\\n'+head+
+ if(lvl=='stop'){var ans=prompt('⛔ ВХОД: в похожих ситуациях СТАБИЛЬНО ХУЖЕ СРЕДНЕГО\\n\\n'+head+
    'Чтобы всё равно отправить, впиши тикер '+c.sym+':');
   if((ans||'').trim().toUpperCase()!=String(c.sym).toUpperCase()){logDec('cancelled');return;}}
- if(!confirm(head+(S.acc=='live'?'🔴 РЕАЛЬНЫЕ ДЕНЬГИ\\n\\n':'VST-демо\\n\\n')+txt)){logDec('cancelled');return;}
+ if(!confirm(head+(S.acc=='live'?'🔴 РЕАЛЬНЫЕ ДЕНЬГИ\\n\\n':'DEMO-счёт\\n\\n')+txt)){logDec('cancelled');return;}
  logDec('sent');
  try{var res=await fetch('/api/trade',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({sym:c.sym,side:side,mode:S.acc,lev:r.lev,sl:t.sl,tp:t.tp,
@@ -3834,7 +3837,7 @@ async function acct(loud){
  try{var r=await fetch('/api/account?mode='+S.acc,{cache:'no-store'});var d=await r.json();
   if(d.error){document.getElementById('bal').innerHTML='<span style=color:var(--dn)>'+d.error+'</span>';
    S.bal=0;
-   if(loud&&S.acc=='live'){alert('LIVE недоступен:\\n'+d.error+'\\n\\nВозвращаю на VST.');
+   if(loud&&S.acc=='live'){alert('LIVE недоступен:\\n'+d.error+'\\n\\nВозвращаю на DEMO-счёт.');
     S.acc='vst';setBt('#b_acc_vst,#b_acc_live',document.getElementById('b_acc_vst'));
     document.getElementById('b_acc_live').classList.remove('live');acct();}
    return;}
@@ -3994,20 +3997,20 @@ async function pullLv(){
       axisLabelVisible:false,title:pt[0][1]+' '+k}));});});
    var h=[],f=v.flags||{},nb=function(a,k){return (a||[]).filter(function(x){return x.kind==k;}).length;};
    var fg=function(cls,txt,hint){return '<span class="fg '+cls+'" title="'+hint+'">'+txt+'</span>';};
-   if(v.leg)h.push(fg(v.leg.side=='long'?'b':'s','нога '+v.leg.side.toUpperCase(),
-    'Нога старшего масштаба OKO-SM (swing 50): от origin к экстремуму — от неё считаем откат и OTE'));
+   if(v.leg)h.push(fg(v.leg.side=='long'?'b':'s','импульс '+(v.leg.side=='long'?'ЛОНГ':'ШОРТ'),
+    'Импульс старшего масштаба OKO (swing 50): от начала к экстремуму — от него считаем откат и зону интереса (OTE)'));
    var sw=(v.brk||[]).filter(function(b){return !b.int;}).slice(-1)[0];
    if(sw)h.push(fg(sw.dir=='bull'?'b':'s',sw.kind+(sw.dir=='bull'?'↑':'↓'),
     sw.kind=='CHoCH'?'CHoCH — смена характера: первый пробой ПРОТИВ тренда (разворот)'
                     :'BOS — пробой ПО тренду (продолжение)'));
-   if(nb(v.ob,'bull'))h.push(fg('b','OB↑'+nb(v.ob,'bull'),'Order Block бычий: спокойная свеча перед сломом вверх — зона спроса'));
-   if(nb(v.ob,'bear'))h.push(fg('s','OB↓'+nb(v.ob,'bear'),'Order Block медвежий: зона предложения'));
-   if(nb(v.fvg,'bull'))h.push(fg('b','FVG↑'+nb(v.fvg,'bull'),'Fair Value Gap вверх: незакрытый трёхсвечный имбаланс — магнит для возврата цены'));
-   if(nb(v.fvg,'bear'))h.push(fg('s','FVG↓'+nb(v.fvg,'bear'),'Fair Value Gap вниз: незакрытый имбаланс'));
+   if(nb(v.ob,'bull'))h.push(fg('b','OB↑'+nb(v.ob,'bull'),'Ордер Блок бычий: спокойная свеча перед сломом вверх — зона спроса'));
+   if(nb(v.ob,'bear'))h.push(fg('s','OB↓'+nb(v.ob,'bear'),'Ордер Блок медвежий: зона предложения'));
+   if(nb(v.fvg,'bull'))h.push(fg('b','FVG↑'+nb(v.fvg,'bull'),'Имбаланс (FVG) вверх: незакрытый трёхсвечный разрыв — магнит для возврата цены'));
+   if(nb(v.fvg,'bear'))h.push(fg('s','FVG↓'+nb(v.fvg,'bear'),'Имбаланс (FVG) вниз: незакрытый разрыв'));
    (v.eq||[]).slice(-1).forEach(function(q){h.push(fg('g',q.kind,
-    q.kind=='EQH'?'Equal Highs — равные вершины: скопление стопов сверху, цель для свипа'
-                 :'Equal Lows — равные донья: ликвидность снизу'));});
-   if(f.OTE)h.push(fg('g','OTE','Optimal Trade Entry: цена в зоне отката 0.618–0.786 ноги'));
+    q.kind=='EQH'?'Равные вершины (EQH): скопление стопов сверху = ликвидность, цель для снятия ликвидности'
+                 :'Равные донья (EQL): скопление стопов снизу = ликвидность'));});
+   if(f.OTE)h.push(fg('g','OTE','Зона интереса (OTE): цена в зоне отката 0.618–0.786 импульса'));
    if(v.regime)h.push(fg('',v.regime,'Режим рынка: TREND_UP / TREND_DOWN / RANGE'));
    c.el.querySelector('.fl').innerHTML=LV.badges?h.join(''):'';
    drawOv(c);});
@@ -4026,7 +4029,7 @@ function tagHint(t){
 // (монета+тип+уровень) добивает остаток спама. Перенос на сервер — в бэклоге.
 var ALT=[['ЦЕНОВЫЕ',null],['al_line','моя линия (уровень / трендовая)'],['al_piv','пивот D/W'],
  ['al_zone','вход в зону FVG / OB'],['СОБЫТИЯ',null],['al_atr','смена ATRTrend'],
- ['al_wt','кросс WT'],['al_vol','аномалия объёма (≥3×)'],['ПРОЧЕЕ',null],
+ ['al_wt','кросс WT'],['al_vol','всплеск объёма (≥3×)'],['ПРОЧЕЕ',null],
  ['al_sound','звук'],['al_notify','уведомления системы']];
 var AL={};try{AL=JSON.parse(localStorage.getItem('oko_alerts')||'null')||{};}catch(e){}
 ALT.forEach(function(a){if(a[1]&&AL[a[0]]===undefined)AL[a[0]]=(a[0]!='al_notify');});
@@ -4230,7 +4233,7 @@ document.getElementById('b_lv').onclick=function(){S.lv=!S.lv;this.classList.tog
   if(!v)return;
   if(S.allSyms&&S.allSyms.length&&S.allSyms.indexOf(v)<0){
    var hit=S.allSyms.filter(function(x){return x.indexOf(v)===0;})[0];
-   if(!hit){alert('Нет такой пары на BingX: '+v);return;}
+   if(!hit){alert('Нет такой пары на бирже: '+v);return;}
    v=hit;}
   if(FAV.indexOf(v)<0){FAV.push(v);favSave();}
   q.value='';
@@ -4398,19 +4401,24 @@ figure{margin:0 0 10px}figure img{width:100%;max-width:100%;height:auto;border-r
 .ask{display:flex;gap:8px;align-items:center;margin:0 0 12px;flex-wrap:wrap}.ask input{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:6px 10px;width:220px}
 .ask .bt{cursor:pointer}.mut{color:var(--mut);font-size:12.5px}.zone{font-size:11.5px;padding:1px 7px;border-radius:4px;border:1px solid var(--gold);color:var(--gold)}
 </style></head><body>__NAV__<div class=wrap>
-<h1>🌊 Волны — журнал тени ядра</h1>
-<p class=sub>Каждый сетап, найденный тенью на закрытых барах 4h (BingX, оборот ≥2M): разметка 0-5, правила ядра, вход/цель/стоп, прогноз по фибо.
-Оценка разметки пишется в <code>data/wave5_shadow/reviews.json</code> и попадает в CSV. Строка «ИИ» — самотестирование по методичке; твоя оценка — контроль его оценки.</p>
+<h1>🌊 Волны — журнал наблюдения ядра</h1>
+<p class=sub>Каждый сетап, найденный наблюдением на закрытых барах 4h (объём за 24ч ≥ 2 млн): разметка 0-5, правила ядра, вход/цель/стоп, прогноз по фибо.
+Оценка разметки сохраняется в журнал. Строка «ИИ» — самопроверка по методичке; оценка эксперта — контроль оценки ИИ.</p>
 <div class=ask><input id=asym placeholder="тикер, например SOLV" maxlength=20><span class="bt" id=abtn>🌊 разобрать монету</span><span id=astat class=mut></span></div>
-<div class=ask><span class="bt" id=sbtn data-side="SHORT">🔎 найти похожие: пятёрка вверх → шорт</span><span class="bt" id=sbtnl data-side="LONG">пятёрка вниз → лонг</span><span id=sstat class=mut></span></div>
+<div class=ask><span class="bt" id=sbtn data-side="SHORT">🔎 найти похожие: пятая волна вверх → шорт</span><span class="bt" id=sbtnl data-side="LONG">пятая волна вниз → лонг</span><span id=sstat class=mut></span></div>
 <div id=ares></div>
 <div id=sres></div>
-<div class=tabs><span class="bt on" data-f="active">активные</span><span class=bt data-f="closed">закрытые</span><span class=bt data-f="all">все</span><span class=bt data-f="core">только ядро</span><span class=bt data-f="unrated">без оценки</span><span class=sp id=cnt></span><span class=bt id=colall title="свернуть все">свернуть все</span><span class=bt id=expall title="развернуть все">развернуть все</span><span class=mut id=agr title="сколько раз вердикт правил совпал с оценкой Егора"></span></div>
+<div class=tabs><span class="bt on" data-f="active">активные</span><span class=bt data-f="closed">закрытые</span><span class=bt data-f="all">все</span><span class=bt data-f="core">только ядро</span><span class=bt data-f="unrated">без оценки</span><span class=sp id=cnt></span><span class=bt id=colall title="свернуть все">свернуть все</span><span class=bt id=expall title="развернуть все">развернуть все</span><span class=mut id=agr title="сколько раз вердикт правил совпал с оценкой эксперта"></span></div>
 <div class=mut id=scan></div>
 <div id=list><div class=empty>загрузка…</div></div>
 </div><div class=lb id=lb><img id=lbi alt=""></div>
 <script>
 var V=[],ROWS=[],F='active',SCAN={};
+// перевод ОТОБРАЖЕНИЯ значений журнала; сами значения — ключи фильтров и reviews.json, их не трогаем
+var WST={entered:'в сделке',closed:'закрыт'},WOUT={no_entry:'без входа',target:'цель',stop:'стоп',time:'по времени'},
+ WTRIG={cross:'кросс',line24:'линия 2-4'},WMODE={watch:'наблюдение'};
+function wSide(s){return s=='LONG'?'ЛОНГ':s=='SHORT'?'ШОРТ':(s||'');}
+function wOut(o){return WOUT[o]||o||'';}
 // свёрнутые карточки (Егор 16.09: «панели сворачиваемыми, чтобы не скролить всю страницу»); по умолчанию закрытые — свёрнуты
 var COL={};try{COL=JSON.parse(localStorage.getItem('wavesCollapsed')||'{}');}catch(e){COL={};}
 function saveCol(){try{localStorage.setItem('wavesCollapsed',JSON.stringify(COL));}catch(e){}}
@@ -4419,23 +4427,23 @@ function pct(a,b,side){if(a==null||b==null||!b)return '';var p=(a/b-1)*100*(side
 function num(x,d){return x==null?'—':(+x).toPrecision(d||5);}
 function card(r){var rv=r.review||{};
  var btns=function(who){return V.map(function(v){return '<span class="bt'+(rv[who]==v?' on':'')+'" data-k="'+r.key+'" data-w="'+who+'" data-v="'+v+'">'+v+'</span>';}).join('');};
- return '<section class="card'+(COL[r.key]?' col':'')+'" id="c_'+r.key+'"><h2 data-k="'+r.key+'"><span class=tw>'+(COL[r.key]?'▸':'▾')+'</span>'+(r.sym||'').replace('/USDT','')+' <span class="side '+r.side+'">'+r.side+'</span><span class=st>'+r.status+(r.outcome?' · '+r.outcome:'')+'</span>'+(r.core_full?'<span class=core>ЯДРО</span>':'')+
+ return '<section class="card'+(COL[r.key]?' col':'')+'" id="c_'+r.key+'"><h2 data-k="'+r.key+'"><span class=tw>'+(COL[r.key]?'▸':'▾')+'</span>'+(r.sym||'').replace('/USDT','')+' <span class="side '+r.side+'">'+wSide(r.side)+'</span><span class=st>'+(WST[r.status]||r.status)+(r.outcome?' · '+wOut(r.outcome):'')+'</span>'+(r.core_full?'<span class=core>ЯДРО</span>':'')+
  (r.pnl_pct!=null?'<span class="st '+(r.pnl_pct>=0?'up':'dn')+'">'+r.pnl_pct+'%</span>':'')+(r.zone_1d?'<span class=st>'+r.zone_1d+'</span>':'')+'</h2><div class=body>'+
- '<div class=meta>'+(r.zone_1d?'<span class=zone>пятая в дневной ноге: '+r.zone_1d+' ('+r.depth_1d+')</span> ':'')+
-  (r.cluster_3d!=null?'<span class=zone title="сколько разных монет дали пятёрку той же стороны за прошлые 3 дня; в скобках — приведено к 145 монетам замера">'+(r.mass_flush?'🌊 после массового слива':'кластер')+': '+r.cluster_3d+' ('+r.cluster_norm+')</span> ':'')+
-  (r.breadth10!=null?'<span class=zone title="доля монет вселенной с ходом за 72 ч ниже −10% на момент детекции">ширина слива: '+Math.round(r.breadth10*100)+'%</span>':'')+'</div>'+
- '<div class=meta>вершина '+String(r.top_time||'').slice(0,16)+' UTC · '+r.hours_from_top+' ч · импульс '+r.imp_pct+'% · '+fl('фрактал',r.fractal)+' '+fl('канал',r.depth5!=null&&r.depth5>=0.5)+' '+fl('черед',r.altern)+' '+fl('счёт',r.count_ok)+' · канал '+r.depth5+' · w2 '+r.w2_retr+' w4 '+r.w4_retr+' w3/w1 '+r.w3_ext+' · сломы '+r.bos1+'/'+r.bos3+' · 1D '+(r.d_bull?'бычья':'медвежья')+(r.d_broke?', свинг пробит':'')+', WT1D '+r.d_wt+(r.absorbed?' · поглощено свингов '+r.absorbed:'')+'</div>'+
- (r.analyst_png?'<figure><img src="/waves/analyst/'+r.analyst_png+'" alt="разбор '+r.sym+'" loading=lazy><figcaption class=mut>волновой разбор: 1D нога · 4h счёт · 3m слом · сценарии A/B'+(r.chart?' · <a href="/waves/chart/'+r.chart+'" target=_blank>разметка ядра</a>':'')+'</figcaption></figure>':
+ '<div class=meta>'+(r.zone_1d?'<span class=zone>пятая волна в дневном импульсе: '+r.zone_1d+' ('+r.depth_1d+')</span> ':'')+
+  (r.cluster_3d!=null?'<span class=zone title="сколько разных монет дали пятую волну той же стороны за прошлые 3 дня; в скобках — приведено к 145 монетам замера">'+(r.mass_flush?'🌊 после массового слива':'кластер')+': '+r.cluster_3d+' ('+r.cluster_norm+')</span> ':'')+
+  (r.breadth10!=null?'<span class=zone title="доля монет рынка, упавших больше чем на 10% за 72 ч, на момент детекции">упали >10% за 72ч: '+Math.round(r.breadth10*100)+'% монет</span>':'')+'</div>'+
+ '<div class=meta>вершина '+String(r.top_time||'').slice(0,16)+' UTC · '+r.hours_from_top+' ч · импульс '+r.imp_pct+'% · '+fl('фрактал',r.fractal)+' '+fl('канал',r.depth5!=null&&r.depth5>=0.5)+' '+fl('чередование',r.altern)+' '+fl('счёт',r.count_ok)+' · канал '+r.depth5+' · w2 '+r.w2_retr+' w4 '+r.w4_retr+' w3/w1 '+r.w3_ext+' · сломы '+r.bos1+'/'+r.bos3+' · 1D '+(r.d_bull?'бычья':'медвежья')+(r.d_broke?', свинг пробит':'')+', WT1D '+r.d_wt+(r.absorbed?' · поглощено свингов '+r.absorbed:'')+'</div>'+
+ (r.analyst_png?'<figure><img src="/waves/analyst/'+r.analyst_png+'" alt="разбор '+r.sym+'" loading=lazy><figcaption class=mut>волновой разбор: 1D импульс · 4h счёт · 3m слом · сценарии A/B'+(r.chart?' · <a href="/waves/chart/'+r.chart+'" target=_blank>разметка ядра</a>':'')+'</figcaption></figure>':
   (r.chart?'<figure><img src="/waves/chart/'+r.chart+'" alt="'+r.sym+'" loading=lazy></figure>':'<div class=empty>картинки нет</div>'))+
- '<div class=grid><div class=kv><span>вход</span><b>'+(r.entry_trigger||'—')+' · '+(r.entered_at||'')+' · '+num(r.entry_price)+'</b></div>'+
+ '<div class=grid><div class=kv><span>вход</span><b>'+(WTRIG[r.entry_trigger]||r.entry_trigger||'—')+' · '+(r.entered_at||'')+' · '+num(r.entry_price)+'</b></div>'+
  '<div class=kv><span>последнее закрытие</span><b>'+num(r.last_close)+' '+pct(r.last_close,r.entry_price,r.side)+'</b></div>'+
- '<div class=kv><span>цель (конец w4)</span><b>'+num(r.p4_target)+' '+pct(r.p4_target,r.entry_price,r.side)+'</b></div>'+
+ '<div class=kv><span>цель (конец волны 4)</span><b>'+num(r.p4_target)+' '+pct(r.p4_target,r.entry_price,r.side)+'</b></div>'+
  '<div class=kv><span>стоп</span><b>'+num(r.stop)+' '+pct(r.stop,r.entry_price,r.side)+'</b></div>'+
- '<div class=kv><span>цели пятой</span><b>'+(r.w5_reached||'—')+'</b></div><div class=kv><span>коррекция показала</span><b>'+(r.corr_reached||'—')+'</b></div>'+
+ '<div class=kv><span>цели пятой волны</span><b>'+(r.w5_reached||'—')+'</b></div><div class=kv><span>коррекция показала</span><b>'+(r.corr_reached||'—')+'</b></div>'+
  '<div class=kv><span>линия 2-4</span><b>'+(r.line24_broken?'пробита':'нет')+'</b></div>'+
- (r.pnl_pct!=null?'<div class=kv><span>итог ('+r.outcome+')</span><b class="'+(r.pnl_pct>=0?'up':'dn')+'">'+r.pnl_pct+'%</b></div>':'')+
- (r.pnl_trail!=null?'<div class=kv><span>итог с трейлом ('+r.outcome_trail+')</span><b class="'+(r.pnl_trail>=0?'up':'dn')+'">'+r.pnl_trail+'%</b></div>':'')+'</div>'+
- '<div class=rv><div class=row><span class=who>Егор</span>'+btns('egor')+'<input placeholder="заметка (что не так, где должна быть точка)" data-k="'+r.key+'" data-w="egor" value="'+(rv.egor_note||'').replace(/"/g,'&quot;')+'"></div>'+
+ (r.pnl_pct!=null?'<div class=kv><span>итог ('+wOut(r.outcome)+')</span><b class="'+(r.pnl_pct>=0?'up':'dn')+'">'+r.pnl_pct+'%</b></div>':'')+
+ (r.pnl_trail!=null?'<div class=kv><span>итог с трейлом ('+wOut(r.outcome_trail)+')</span><b class="'+(r.pnl_trail>=0?'up':'dn')+'">'+r.pnl_trail+'%</b></div>':'')+'</div>'+
+ '<div class=rv><div class=row><span class=who>эксперт</span>'+btns('egor')+'<input placeholder="заметка (что не так, где должна быть точка)" data-k="'+r.key+'" data-w="egor" value="'+(rv.egor_note||'').replace(/"/g,'&quot;')+'"></div>'+
  '<div class="row ai"><span class=who>ИИ</span>'+(rv.ai?'<b>'+rv.ai+'</b> · '+(rv.ai_note||'')+' <span class=mut>('+(rv.ai_ts||'')+')</span>':'ещё не смотрел')+'</div></div></div></section>';}
 function render(){var rows=ROWS.filter(function(r){var rv=r.review||{};
   if(F=='active')return r.status!='closed';if(F=='closed')return r.status=='closed';if(F=='core')return r.core_full;if(F=='unrated')return !rv.egor;return true;});
@@ -4454,15 +4462,15 @@ async function load(){var r=await fetch('/api/waves/journal',{cache:'no-store'})
  ROWS.forEach(function(x){if(COL[x.key]===undefined)COL[x.key]=(x.status=='closed');});   // закрытые свёрнуты по умолчанию
  SCAN=d.scan||{};
  var sc=document.getElementById('scan');
- sc.textContent=SCAN.at?('скан тени: последний '+SCAN.at+' UTC ('+SCAN.mode+')'+(SCAN.last_full?' · полная разметка '+SCAN.last_full:'')+(SCAN.universe?' · монет '+SCAN.universe:'')+' · активных '+SCAN.active+' · в журнале '+SCAN.journal+' · последний новый сетап '+(SCAN.last_new||'—')):'статус скана недоступен';
+ sc.textContent=SCAN.at?('скан наблюдения: последний '+SCAN.at+' UTC ('+(WMODE[SCAN.mode]||SCAN.mode)+')'+(SCAN.last_full?' · полная разметка '+SCAN.last_full:'')+(SCAN.universe?' · монет '+SCAN.universe:'')+' · активных '+SCAN.active+' · в журнале '+SCAN.journal+' · последний новый сетап '+(SCAN.last_new||'—')):'статус скана недоступен';
  // молодые монеты (история 4h < порога, не сканируются): число + ближайшие к порогу; полный список — по клику (Егор 19.09: простыня в шапке)
  var yl=(SCAN.young||[]).map(function(x){var p=x.split('=');return {s:p[0],n:+p[1]};}).sort(function(a,b){return b.n-a.n;});
  if(yl.length){var th=SCAN.min_hist_4h||400;var near=yl.filter(function(x){return x.n>=th-50;}).map(function(x){return x.s+'='+x.n;});
   var sp=document.createElement('span');sp.style.cursor='pointer';sp.title='нажми — полный список';
-  var brief=' · молодые (история 4h < '+th+' баров, не сканируются): '+yl.length+(near.length?' · на подходе: '+near.join(', '):'')+' ▸';
+  var brief=' · молодые (история 4h < '+th+' баров, не сканируются): '+yl.length+(near.length?' · скоро наберут историю: '+near.join(', '):'')+' ▸';
   var full=' · молодые ('+yl.length+'): '+yl.map(function(x){return x.s+'='+x.n;}).join(', ')+' ◂';
   sp.textContent=brief;sp.onclick=function(){sp.textContent=(sp.textContent==brief)?full:brief;};sc.appendChild(sp);}
- var a=d.agreement||{};document.getElementById('agr').textContent=a.n?(' · согласие ИИ ↔ Егор: '+a.hit+'/'+a.n+' ('+Math.round(a.hit/a.n*100)+'%)'):' · согласие ИИ ↔ Егор: оценок Егора пока нет';
+ var a=d.agreement||{};document.getElementById('agr').textContent=a.n?(' · согласие ИИ ↔ эксперт: '+a.hit+'/'+a.n+' ('+Math.round(a.hit/a.n*100)+'%)'):' · согласие ИИ ↔ эксперт: оценок эксперта пока нет';
  render();}
 document.querySelectorAll('.tabs .bt').forEach(function(b){b.onclick=function(){document.querySelectorAll('.tabs .bt').forEach(function(x){x.classList.remove('on');});b.classList.add('on');F=b.dataset.f;render();};});
 document.getElementById('lb').onclick=function(){this.style.display='none';};
@@ -4479,8 +4487,8 @@ async function analyze(){var sym=document.getElementById('asym').value.trim();if
  }catch(e){st.textContent='ошибка: '+e;}}
 function simRender(d){var st=document.getElementById('sstat');
  if(d.running){st.textContent=' '+d.stage+' '+d.done+'/'+d.total+'…';}else{st.textContent=d.ts?(' '+d.stage+' · '+d.ts+' · найдено '+d.items.length):(d.stage?' '+d.stage:'');}
- var h='';(d.items||[]).forEach(function(x){h+='<section class=card><h2>'+x.sym+' · '+(x.side=='SHORT'?'пятёрка вверх → шорт':'пятёрка вниз → лонг')+(x.core_full?' · ЯДРО':(x.core?' · канал':''))+
-  (x.a_done?' · <b>волна A закончена</b>':'')+(x.zone_touch?' · в зоне отката':'')+(x.zone?' <span class=zone>1D: '+x.zone+(x.depth!=null?' ('+x.depth+')':'')+'</span>':'')+'</h2>'+
+ var h='';(d.items||[]).forEach(function(x){h+='<section class=card><h2>'+x.sym+' · '+(x.side=='SHORT'?'пятая волна вверх → шорт':'пятая волна вниз → лонг')+(x.core_full?' · ЯДРО':(x.core?' · канал':''))+
+  (x.a_done?' · <b>волна A закончена</b>':'')+(x.zone_touch?' · в зоне интереса после отката':'')+(x.zone?' <span class=zone>1D: '+x.zone+(x.depth!=null?' ('+x.depth+')':'')+'</span>':'')+'</h2>'+
   (x.png?'<figure><img src="/waves/analyst/'+x.png+'" alt="разбор '+x.sym+'"></figure>':'<p class=mut>'+(x.text||[]).join('<br>')+'</p>')+'</section>';});
  document.getElementById('sres').innerHTML=h;
  document.querySelectorAll('#sres figure img').forEach(function(i){i.onclick=function(){document.getElementById('lbi').src=i.src;document.getElementById('lb').style.display='flex';};});
