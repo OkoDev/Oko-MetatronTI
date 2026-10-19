@@ -185,6 +185,44 @@ USDT.D и mcap лежат в `ohlcv_cache.db`, а не в `external_data.db` (т
 🔴 Канон Куба — 13 сфер (сакральная геометрия, полная связность). Сферы 14+ — расширение
 за канон; при добавлении новой проверять этот список, иначе номер уйдёт в дубль.
 
+
+## 3.6. ⏱️ ТАЙМФРЕЙМЫ, ЯДРО И МОДУЛИ РЕШЕНИЙ
+
+> Перенесено 19.10.2026 из `TASKS.md` (раздел «РЕЕСТР ИНСТРУМЕНТОВ», 27.08) — справочник,
+> а не задачи. Остальное из того раздела уже было здесь, исходник → `TASKS-ARCHIVE.md`.
+
+#### Таймфреймы и связки
+
+| ТФ | в кэше | **ядро** (полное покрытие) | старшие | боевой инстанс | статус проверки |
+|---|---|---|---|---|---|
+| 5m | 449 (2025-01→2026-05) | **0 до 2024** | 15m · 1h | нет | 🔵 не трогали · бычьего 2023 НЕТ |
+| | | | | | |
+| 15m | 496 (2022-01→2026-08) | **97** | 1h · 4h | short + дрейф-гейт | 🔄 ядро прогнано 30.08: 27684 сд, 757 призн. Старое «0 из 446» — на 40 монетах |
+| | | | | | |
+| 1h | 514 (2022-01→2026-08) | **94** | 4h · 1d | обе стороны | 🔴 ядро НЕ прогнано (136.A). «0 из 446» — на 40 монетах, вердикт снят до перемера |
+| | | | | | |
+| 4h | 491 (2022-01→2026-08) | **94** | 1d | нет | 🔴 «закрыт: хуже случайного входа» — на 40 монетах. **Вердикт СНЯТ** до перемера (136.B) |
+| | | | | | |
+| 1d | **19** (2026-01→2026-05) | 0 | — | нет | 🔴 5 месяцев данных — замер невозможен, не «мало», а нельзя |
+
+#### Модули с логикой решений (86 файлов, в матрицу входит один)
+
+| Папка | Файлов | Примеры |
+|---|---|---|
+| core/smc | 27 | choch_wavec · confluence · dc_legs · fibonacci · fvg · impulse_assembly · liquidity |
+| | | |
+| core/intelligence | 20 | decision_fusion · entry_matrix · confidence_calibrator · feature_snapshot · advisor_connector |
+| | | |
+| core/signals | 13 | atr_change_detector · funding_detector · htf_detectors · liquidity_sweep_detector · ote_detector |
+| | | |
+| core/context | 11 | market_drift · marketcap_engine · phase_sphere · sphere_registry · trigger_bus |
+| | | |
+| core/indicators | 8 | anomaly_model · bounce_detector · divergence_detector · dynamic_thresholds · market_regime |
+| | | |
+| core/ml | 7 | ml_predictor · mtf_smc_specialist · mtf_wt_specialist · outcome_predictor · r_predictor · rl_exit_agent |
+| | | |
+| core/calculators | 2 | **combinator_core (это и есть матрица)** · swing_bridge |
+
 ## 4. ⚙️ СЛОЙ УПРАВЛЕНИЯ ПОЗИЦИЕЙ — 15 методов, мерены 3
 
 > Код: `core/trading/tsl_engine.py` · `core/trading/cascade_tsl.py` · конфиг `trading.*`
