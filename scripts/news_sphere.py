@@ -113,12 +113,15 @@ def _get(url: str, timeout: int = 20) -> bytes:
     return urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout).read()
 
 
-def _llm(prompt: str, max_tokens: int = 400) -> str:
+def _llm(prompt: str, max_tokens: int = 400, role: str = LLM_ROLE) -> str:
     """Ответ первого живого кандидата роли. Пустая строка = все упали (вызывающий решает).
 
     13.10: было СВОЕЙ копией цепочки (LLM_CHAIN) — второй список провайдеров рядом с реестром
     в llm_ask. Два списка расходятся: модель снимают с каталога, правят в одном месте, а второе
-    молча умирает. Теперь просим РОЛЬ `classify_cheap`, перебор живых — в одном месте на проект.
+    молча умирает. Теперь просим РОЛЬ, перебор живых — в одном месте на проект.
+    14.10: классификация (частая, мелкая) и компас (редкий, тяжёлый синтез) конкурировали за
+    один провайдер → компас падал «рой не ответил». Теперь компас просит role='reason_strong'
+    (groq/gpt-oss-120b — ДРУГАЯ модель, своя квота, не выжигается потоком новостей на qwen).
     """
     try:
         sys.path.insert(0, "tools")
@@ -128,10 +131,10 @@ def _llm(prompt: str, max_tokens: int = 400) -> str:
         return ""
     load_env()
     try:
-        text, who = ask_role(LLM_ROLE, prompt, max_tokens)
+        text, who = ask_role(role, prompt, max_tokens)
         return text
     except Exception as e:  # noqa: BLE001 — роль не ответила никем; решает вызывающий
-        print(f"[NEWS] роль {LLM_ROLE}: {str(e)[:160]}")
+        print(f"[NEWS] роль {role}: {str(e)[:160]}")
         return ""
 
 
@@ -706,7 +709,9 @@ def compass(c) -> None:
     try:
         # 02.10: раньше компас ДУМАЛ (qwen3 hybrid-thinking, Егор 08.07). У внешних моделей
         # режима «think» нет — синтез идёт обычным вызовом с большим бюджетом токенов.
-        resp = _llm(COMPASS_PROMPT.replace("{data}", data), 1200)
+        # 14.10: компас = синтез (reason_strong), не классификация — иначе конкурирует с потоком
+        # новостей за qwen и падает. groq/gpt-oss-120b почти свободна (советник 3/сут + компас 24/сут).
+        resp = _llm(COMPASS_PROMPT.replace("{data}", data), 1200, role="reason_strong")
         if not resp:
             print("[COMPASS] рой не ответил — пропуск цикла")
             return
