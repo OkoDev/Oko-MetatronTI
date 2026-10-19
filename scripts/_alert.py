@@ -1,17 +1,18 @@
 """
-_alert.py — ОПОВЕЩЕНИЯ ИЗ ФОНОВЫХ ВАХТ: Telegram + след в TASKS.md.
+_alert.py — ОПОВЕЩЕНИЯ ИЗ ФОНОВЫХ ВАХТ: Telegram + след в WATCH.md.
 
 Повод (Егор, 21.08.2026):
   1. «как мы узнаем об изменении? нужно мониторить самостоятельно?»
      Вахта писала в лог pm2, который никто не читает. Результат наблюдения,
      о котором никто не узнаёт, наблюдением не является.
   2. «телеграм хорошо конечно! но я могу пропустить! таск в бэклог нужен».
-     Верно: сообщение листается, а `TASKS.md` читается при старте КАЖДОЙ сессии
-     (он в обязательном списке в CLAUDE.md).
+     Верно: сообщение листается, а файл остаётся. 19.10.2026 журнал выселен из
+     `TASKS.md` в `WATCH.md`: вахта — наблюдение, а не задача, и в списке задач
+     она занимала первый экран.
 
 Поэтому у изменения ТРИ независимых пути распространения:
     Telegram        — узнать сразу
-    TASKS.md        — не потерять, если пропустил
+    WATCH.md        — не потерять, если пропустил
     шина событий    — через `core/context/watch_bridge.py`, чтобы узнали ОСТАЛЬНЫЕ СФЕРЫ
                       (Куб: сферы общаются через шину, а не напрямую)
 
@@ -36,8 +37,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = str(ROOT / "oko_feed" / "watch.db")   # N16 30.09: состояние вахт — своя база, не subscriptions.db (sat_store)
-TASKS = ROOT / "TASKS.md"
-SECTION = "## 🔭 СРАБОТАВШИЕ ВАХТЫ"
+WATCH = ROOT / "WATCH.md"              # 19.10: журнал вахт выселен из TASKS.md — наблюдение ≠ задача
+MAX_ROWS = 40                          # старше — отрезается, иначе файл растёт без конца
 logger = logging.getLogger(__name__)
 
 NL = "\n"
@@ -125,44 +126,40 @@ def _save_state(key: str, state: str) -> None:
 
 def log_to_tasks(title: str, state: str, detail: str) -> bool:
     """
-    Дописывает строку о срабатывании вахты в TASKS.md.
+    Дописывает строку о срабатывании вахты в WATCH.md (новая строка — сверху).
 
-    Секция создаётся при первом срабатывании и живёт сразу после заголовка файла,
-    чтобы попадаться на глаза раньше списка задач. Записи копятся, не затирая
-    друг друга: история срабатываний — тоже информация.
+    Записи копятся, не затирая друг друга: история срабатываний — тоже информация.
+    Но не бесконечно: хвост старше MAX_ROWS отрезается, иначе журнал вытесняет сам себя.
     """
     try:
-        text = TASKS.read_text(encoding="utf-8")
+        text = WATCH.read_text(encoding="utf-8")
     except Exception as e:  # noqa: BLE001
-        logger.warning("[alert] TASKS.md недоступен: %s", e)
+        logger.warning("[alert] WATCH.md недоступен: %s", e)
         return False
     stamp = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
-    row = "| " + stamp + " | **" + title + "** | `" + state + "` | " + detail + " |" + NL
-    if SECTION in text:
-        i = text.index(SECTION)
-        sep = text.index("|---", i)                 # строка-разделитель таблицы
-        j = text.index(NL, sep) + 1                 # сразу после неё
-        text = text[:j] + row + text[j:]
-    else:
-        head_end = text.index(NL, text.index("# ")) + 1
-        block = (NL + SECTION + NL + NL
-                 + "> Пишется автоматически из фоновых вахт (`scripts/_alert.py`)." + NL
-                 + "> Telegram можно пропустить — эта таблица читается при старте сессии." + NL + NL
-                 + "| когда | вахта | состояние | что делать |" + NL
-                 + "|---|---|---|---|" + NL)
-        text = text[:head_end] + block + row + text[head_end:]
+    row = "| " + stamp + " | **" + title + "** | `" + state + "` | " + detail + " |"
+    lines = text.split(NL)
     try:
-        TASKS.write_text(text, encoding="utf-8")
+        sep = next(i for i, ln in enumerate(lines) if ln.startswith("|---"))
+    except StopIteration:
+        logger.warning("[alert] в WATCH.md нет таблицы — строка не записана")
+        return False
+    head, body = lines[:sep + 1], lines[sep + 1:]
+    rows = [ln for ln in body if ln.startswith("|")]
+    tail = [ln for ln in body if not ln.startswith("|")]      # хвост файла, если появится
+    rows = ([row] + rows)[:MAX_ROWS]
+    try:
+        WATCH.write_text(NL.join(head + rows + tail), encoding="utf-8")
         return True
     except Exception as e:  # noqa: BLE001
-        logger.warning("[alert] не смог записать в TASKS.md: %s", e)
+        logger.warning("[alert] не смог записать в WATCH.md: %s", e)
         return False
 
 
 def notify(key: str, state: str, *, title: str, tg_text: str, task_detail: str,
            first_time: bool = False) -> dict:
     """
-    Оповещение о смене состояния вахты: Telegram + след в TASKS.md.
+    Оповещение о смене состояния вахты: Telegram + след в WATCH.md.
 
     Состояние сохраняется в `watch_state`, откуда его подхватывает
     `core/context/watch_bridge.py` и публикует в шину событий — так узнают
@@ -178,7 +175,7 @@ def notify(key: str, state: str, *, title: str, tg_text: str, task_detail: str,
     sent = alert(tg_text)
     logged = log_to_tasks(title, state, task_detail)
     # 🧊 03.10 (ADR-003 шаг 4): смена состояния — ФАКТ в шину Куба. Раньше о ней узнавал только
-    # Telegram и TASKS.md, а бот опрашивал таблицу `watch_state` раз в 300 с (watch_bridge).
+    # Telegram и WATCH.md, а бот опрашивал таблицу `watch_state` раз в 300 с (watch_bridge).
     # Теперь факт доходит до сфер за секунды. Хаб недоступен → publish=False, вахта работает дальше.
     published = False
     try:
@@ -206,7 +203,7 @@ if __name__ == "__main__":
         print("отправка:", "✅ дошло" if alert("🔧 Проверка канала оповещений.") else "🔴 не дошло")
     elif "--test-task" in sys.argv:
         ok = log_to_tasks("Проверка", "TEST", "тестовая запись, можно удалить")
-        print("запись в TASKS.md:", "✅" if ok else "🔴")
+        print("запись в WATCH.md:", "✅" if ok else "🔴")
     else:
         print("  --test       проверить Telegram")
-        print("  --test-task  проверить запись в TASKS.md")
+        print("  --test-task  проверить запись в WATCH.md")
