@@ -3,12 +3,16 @@ MessageComposer — автоматическая генерация интерп
 
 Приоритет источников для секции "Что произошло":
   1. signal.interpretation  — если детектор уже заполнил поле
-  2. Claude haiku           — AI генерирует по данным сигнала (если ANTHROPIC_API_KEY задан)
+  2. Рой (llm_ask, роль chat_fast) — AI генерирует объяснение типа сигнала, с кешем
   3. Static fallback dict   — для обратной совместимости
 
-Кеш in-memory: ключ (signal_type, direction, description) → текст.
-При новом signal_type AI автоматически объясняет его без изменений кода.
+Кеш in-memory: ключ (signal_type, direction) → текст.
+19.10: БЫЛ Claude haiku (пакет anthropic не установлен → AI не вызывался ни разу, работал словарь).
+Переведён на бесплатный рой. Ключ кеша БЕЗ description: замер показал ~7800 вызовов/сутки с description
+(в нём числа — sweep_level/funding → кеш не работал) против ≤28 без него (14 типов × 2 направления).
+Поэтому объяснение — общее для типа сигнала (как словарь, но генерируется и для новых типов).
 """
+import asyncio
 import logging
 import os
 from typing import Optional
@@ -67,21 +71,21 @@ class MessageComposer:
         self._init_ai()
 
     def _init_ai(self):
-        api_key = os.environ.get("ANTHROPIC_API_KEY") or _load_key_from_config()
-        if not api_key:
-            logger.debug("MessageComposer: ANTHROPIC_API_KEY не задан — используется static fallback")
-            return
+        # 19.10: рой (llm_ask.ask_role) вместо прямого anthropic. Живость кандидата роли не
+        # проверяем при старте (это стоило бы вызова) — ask_role сам переберёт живых, а при
+        # полном отказе interpret() упадёт на статический словарь. Проверяем лишь импорт модуля.
         try:
-            import anthropic
-            self._client = anthropic.AsyncAnthropic(api_key=api_key)
+            import sys
+            from pathlib import Path
+            _tools = str(Path(__file__).resolve().parents[2] / "tools")
+            if _tools not in sys.path:
+                sys.path.insert(0, _tools)
+            from llm_ask import ask_role, load_env  # noqa: F401
+            load_env()                               # ключи в os.environ (ask_role → has_key)
             self._ai_available = True
-            logger.info("MessageComposer: Claude haiku подключён")
-        except ImportError:
-            # 13.10: было logger.debug — и отказ оставался невидимым. Ключ в .env ЕСТЬ, пакета нет,
-            # значит AI не вызывался ни разу, а интерпретации молча берутся из статического словаря.
-            # Отказ подсистемы должен быть виден в логе: WARNING один раз при старте.
-            logger.warning("MessageComposer: ключ задан, но пакет anthropic не установлен — "
-                           "AI-интерпретация ВЫКЛЮЧЕНА, работает статический словарь")
+            logger.info("MessageComposer: AI-интерпретация через рой (роль chat_fast)")
+        except Exception as e:                              # noqa: BLE001
+            logger.warning("MessageComposer: llm_ask недоступен (%s) — работает статический словарь", e)
 
     async def interpret(
         self,
@@ -102,12 +106,12 @@ class MessageComposer:
         if signal_interpretation:
             return signal_interpretation
 
-        # 2. AI с кешем
+        # 2. AI с кешем. Ключ БЕЗ description (см. docstring): объяснение общее для типа сигнала.
         if self._ai_available:
-            cache_key = (signal_type, direction, description)
+            cache_key = (signal_type, direction)
             if cache_key in self._cache:
                 return self._cache[cache_key]
-            result = await self._ask_ai(signal_type, direction, description)
+            result = await self._ask_ai(signal_type, direction)
             if result:
                 self._cache[cache_key] = result
                 return result
@@ -115,21 +119,18 @@ class MessageComposer:
         # 3. Static fallback
         return _STATIC.get(signal_type, {}).get(direction, "")
 
-    async def _ask_ai(self, signal_type: str, direction: str, description: str) -> str:
+    async def _ask_ai(self, signal_type: str, direction: str) -> str:
         dir_ru = "LONG (рост)" if direction == "LONG" else "SHORT (падение)"
-        desc_part = f' Детали: "{description}".' if description else ""
         user_msg = (
-            f"Сигнал: {signal_type}, направление: {dir_ru}.{desc_part} "
+            f"{_SYSTEM_PROMPT}\n\n"
+            f"Сигнал: {signal_type}, направление: {dir_ru}. "
             "Объясни что произошло на рынке одним предложением."
         )
         try:
-            response = await self._client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=80,
-                system=_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_msg}],
-            )
-            text = response.content[0].text.strip()
+            from llm_ask import ask_role
+            # ask_role синхронный → в поток, чтобы не блокировать событийный цикл бота
+            text, _who = await asyncio.to_thread(ask_role, "chat_fast", user_msg, 120)
+            text = (text or "").strip()
             logger.debug("MessageComposer AI [%s/%s]: %s", signal_type, direction, text)
             return text
         except Exception as e:
@@ -138,16 +139,6 @@ class MessageComposer:
 
     def cache_stats(self) -> dict:
         return {"cached": len(self._cache), "ai_available": self._ai_available}
-
-
-def _load_key_from_config() -> Optional[str]:
-    """Ищет anthropic_api_key в config.yaml."""
-    try:
-        from core.infra.config_loader import load_config
-        cfg = load_config()
-        return cfg.get("anthropic_api_key") or cfg.get("ai", {}).get("anthropic_api_key")
-    except Exception:
-        return None
 
 
 # ─── Singleton ─────────────────────────────────────────────────────────────────
