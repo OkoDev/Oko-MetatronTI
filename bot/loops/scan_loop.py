@@ -1224,12 +1224,19 @@ async def _execute_atr_change_signal(
                 # LIMIT v1.1 (08.07 спринт): atr_s2 LIMIT поставлен, fill не подтверждён →
                 # PENDING_ENTRY (reuse лайфцикла radar_armed_loop: fill→OPEN / TTL→cancel;
                 # его _check_pending расширен на trade_mode atr_s2). MARKET-вход не трогаем.
-                if _s2_setup is not None and getattr(_sr_result, "exchange_order_id", None):
+                # 🜂 DEV-244: единое правило исхода лимитной заявки (Сфера Исполнения).
+                # Раньше тут был свой `_mark_pending` ТОЛЬКО при наличии биржевого ордера —
+                # у atr_s2 (mode: off) ордера нет, и его SIM-заявка оставалась OPEN-тенью мимо
+                # sim_fill (тот же класс бага, что DEV-243). finalize разводит: off → PENDING-sim
+                # (судит свеча), live → PENDING/CANCELLED. MARKET-вход (atr_change) не трогаем.
+                if _s2_setup is not None:
                     try:
-                        from bot.loops.radar_armed_loop import _mark_pending
-                        if _mark_pending(bot.trade_simulator.db_path, trade_id):
-                            logger.info("[ATR-S2] #%d → PENDING_ENTRY (LIMIT ждёт fill)", trade_id)
-                            # лимитка ПОСТАВЛЕНА (не вход!) — fill-уведомление даст pending-чекер
+                        from core.execution.limit_lifecycle import finalize_limit_entry
+                        finalize_limit_entry(bot.trade_simulator.db_path, _sr_result,
+                                             "atr_s2", tag="ATR-S2", log=logger)
+                        # TG о ПОСТАВЛЕННОЙ бирже-лимитке — только когда ордер реально на бирже
+                        # (у SIM-источника биржевого ордера нет, сообщать «поставлена» нечего).
+                        if getattr(_sr_result, "exchange_order_id", None):
                             try:
                                 from oko_feed.alerts import send_tg as _stg_s2
                                 _stg_s2(f"⏳ <b>ЛИМИТКА #{trade_id}</b> 🔴 <code>{symbol.split('/')[0]}</code> "
@@ -1239,7 +1246,7 @@ async def _execute_atr_change_signal(
                             except Exception:
                                 pass
                     except Exception as _pe_s2:
-                        logger.warning("[ATR-S2] mark_pending #%d: %s", trade_id, _pe_s2)
+                        logger.warning("[ATR-S2] finalize_limit_entry #%s: %s", trade_id, _pe_s2)
             else:
                 _hd_names = ",".join(g for g, _ in _sr_result.hard_drops) or "none"
                 logger.info(

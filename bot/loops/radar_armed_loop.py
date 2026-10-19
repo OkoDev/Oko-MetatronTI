@@ -153,25 +153,11 @@ def _radar_symbol_busy(db_path, symbol: str) -> bool:
         return True   # fail-closed
 
 
-def _mark_pending(db_path, trade_id: int) -> bool:
-    """OPEN → PENDING_ENTRY: LIMIT поставлен, fill не подтверждён (actual_entry_price пуст).
-
-    PENDING-строка невидима для get_open_trades → TSL/BE/close-by-price/live-guard её не
-    трогают; орфан-детект видит её отдельной выборкой (position_sync._detect_orphans).
-    """
-    try:
-        with sqlite3.connect(db_path, timeout=5) as c:
-            cur = c.execute(
-                "UPDATE simulated_trades SET status='PENDING_ENTRY' WHERE id=? AND status='OPEN' "
-                "AND (actual_entry_price IS NULL OR actual_entry_price <= 0) "
-                "AND exchange_order_id IS NOT NULL AND exchange_order_id != ''",
-                (trade_id,))
-            c.commit()
-            return cur.rowcount > 0
-    except Exception as e:
-        logger.warning("[RADAR-ARMED] mark_pending #%d: %s", trade_id, e)
-        return False
-
+# 🜂 DEV-244: маркеры PENDING переехали в Сферу Исполнения (core/execution/limit_lifecycle).
+# Здесь — тонкий re-export, чтобы собственный pending-цикл radar_armed_loop и внешние импорты
+# `from bot.loops.radar_armed_loop import _mark_pending` продолжали работать (приём ARCH-54).
+from core.execution.limit_lifecycle import mark_pending as _mark_pending          # noqa: E402
+from core.execution.limit_lifecycle import mark_pending_sim as _mark_pending_sim  # noqa: E402
 
 
 def _pending_where() -> str:

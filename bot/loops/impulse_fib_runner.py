@@ -588,44 +588,13 @@ def make_loop(inst: Instance):
                                   _oe.invalidate_balance()
                           except Exception:                      # noqa: BLE001
                               pass
-                          tid = getattr(res, "trade_id", None)
-                          oid = getattr(res, "exchange_order_id", None)
-                          if tid and not oid:
-                              # 🔴 Ордер на биржу НЕ ушёл (гейт/ошибка), а запись уже OPEN —
-                              # такую строку подхватывает TSL и портит ей стоп (ARB #58349:
-                              # стоп ушёл выше входа у сделки, которой на бирже нет).
-                              # Позиции нет → и записи быть не должно.
-                              with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
-                                  _c.execute("UPDATE simulated_trades SET status='CANCELLED' "
-                                             "WHERE id=? AND status='OPEN' AND (exchange_order_id "
-                                             "IS NULL OR exchange_order_id='') AND "
-                                             "(actual_entry_price IS NULL OR actual_entry_price<=0)",
-                                             (int(tid),))
-                                  _c.commit()
-                              logger.warning("[%s] #%s ордер на биржу не ушёл → CANCELLED", TAG, tid)
-                          elif tid:
-                              from bot.loops.radar_armed_loop import _mark_pending
-                              if _mark_pending(bot.trade_simulator.db_path, int(tid)):
-                                  logger.info("[%s] #%s → PENDING_ENTRY (лимитка ждёт фила)", TAG, tid)
-                              # 🔴 ОКНО ГОНКИ: между INSERT (status=OPEN) и mark_pending проходит
-                              # 10-20 сек, и TSL-цикл успевает зацепить строку. XRP #58346 поймали
-                              # живьём: tsl_activated=1, стоп 1.0723 → 1.1541, ВЫШЕ входа 1.0931.
-                              # Пока фила нет, стоп обязан быть исходным — восстанавливаем из
-                              # original_sl. Условие actual_entry гарантирует, что реальную
-                              # позицию (где трейлинг законен) мы не трогаем.
-                              with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
-                                  _r = _c.execute(
-                                      "UPDATE simulated_trades SET stop_loss=original_sl, "
-                                      "tsl_activated=0 WHERE id=? AND original_sl IS NOT NULL "
-                                      "AND original_sl>0 AND stop_loss<>original_sl "
-                                      "AND (actual_entry_price IS NULL OR actual_entry_price<=0)",
-                                      (int(tid),))
-                                  _c.commit()
-                                  if _r.rowcount:
-                                      logger.warning("[%s] #%s стоп восстановлен из original_sl "
-                                                     "(TSL зацепил строку до PENDING)", TAG, tid)
+                          # 🜂 DEV-244: единое правило исхода лимитной заявки (Сфера Исполнения).
+                          # Разводит CANCELLED / PENDING / PENDING-sim по политике источника —
+                          # покрывает и 1h (live), и 15m (пауза, mode: off). См. docstring модуля.
+                          from core.execution.limit_lifecycle import finalize_limit_entry
+                          finalize_limit_entry(bot.trade_simulator.db_path, res, SRC, tag=TAG, log=logger)
                       except Exception as _mp:                   # noqa: BLE001
-                          logger.warning("[%s] mark_pending: %s", TAG, _mp)
+                          logger.warning("[%s] finalize_limit_entry: %s", TAG, _mp)
 
                 conn.commit()
                 stats = dict(conn.execute(

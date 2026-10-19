@@ -474,34 +474,16 @@ async def _register_ote_trade(bot, sig):
                       .get("ote_nested", {}).get("entry_order_type", "MARKET")).upper()
     if trade_id and _entry_type == "LIMIT":
         try:
-            if exchange_id:
-                from bot.loops.radar_armed_loop import _mark_pending
-                if _mark_pending(bot.trade_simulator.db_path, int(trade_id)):
-                    logger.info("[OTE VST] #%s → PENDING_ENTRY (лимитка ждёт фила)", trade_id)
-                with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
-                    _r = _c.execute(
-                        "UPDATE simulated_trades SET stop_loss=original_sl, tsl_activated=0 "
-                        "WHERE id=? AND original_sl IS NOT NULL AND original_sl>0 "
-                        "AND stop_loss<>original_sl "
-                        "AND (actual_entry_price IS NULL OR actual_entry_price<=0)",
-                        (int(trade_id),))
-                    _c.commit()
-                    if _r.rowcount:
-                        logger.warning("[OTE VST] #%s стоп восстановлен из original_sl "
-                                       "(TSL зацепил строку до PENDING)", trade_id)
-            else:
-                # Ордер на биржу не ушёл — позиции не будет, записи быть не должно.
-                with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
-                    _c.execute(
-                        "UPDATE simulated_trades SET status='CANCELLED' WHERE id=? "
-                        "AND status='OPEN' AND (exchange_order_id IS NULL OR exchange_order_id='') "
-                        "AND (actual_entry_price IS NULL OR actual_entry_price<=0)",
-                        (int(trade_id),))
-                    _c.commit()
-                logger.warning("[OTE VST] #%s ордер на биржу не ушёл → CANCELLED", trade_id)
+            # 🜂 DEV-244: единое правило исхода лимитной заявки (Сфера Исполнения). Раньше тут был
+            # код-близнец вида «нет oid → CANCELLED»; у ote_nested (mode: off) oid пуст ПО ЗАМЫСЛУ,
+            # и это убивало бы SIM-заявку до sim_fill, как у impulse_fib_15m (DEV-243). CANCELLED
+            # прерывает уведомление ниже (сделки нет) — сохраняем прежний `return`.
+            from core.execution.limit_lifecycle import finalize_limit_entry
+            if finalize_limit_entry(bot.trade_simulator.db_path, res, "ote_nested",
+                                    tag="OTE VST", log=logger) == "cancelled":
                 return
         except Exception as _mp:                                   # noqa: BLE001
-            logger.warning("[OTE VST] #%s mark_pending: %s", trade_id, _mp)
+            logger.warning("[OTE VST] #%s finalize_limit_entry: %s", trade_id, _mp)
 
     if trade_id:
         logger.info("[OTE VST] %s [%s T%d] %s → trade #%s str=%d entry=%.6f SL=%.6f TP=%.6f exch=%s",

@@ -9,6 +9,40 @@
 
 ---
 
+## [19.10 UTC] Агент: Developer (Даат) — DEV-244: единое правило лимитной заявки в Сфере Исполнения
+- ✅ **DEV-244 сделан.** Развилка «после submit лимитного входа» была СКОПИРОВАНА в каждый луп; копии
+  разъехались (CANCELLED vs OPEN-тень) — корень DEV-243. Собрано в `core/execution/limit_lifecycle.py`:
+  `finalize_limit_entry(db, res, source, *, tag, log)` + переехавшие туда `mark_pending`/`mark_pending_sim`.
+- ✅ Переключены на одну строку: `impulse_fib_runner` (1h+15m), `choch_wavec_loop` (1h+4h),
+  `ote_observer_loop` (ote_nested), `scan_loop`/atr_s2. `radar_armed_loop` — тонкий re-export (совместимость).
+- ⚠️ **По пути вскрылось:** `ote_nested` и `atr_s2` — тоже `mode: off` + LIMIT (не live, как думали в 243.2).
+  Оба спят (0 строк), но дыра та же — закрыта единым правилом.
+- 🔴 **`radar` НЕ переключён** (live, нет ветки CANCELLED по замыслу): перевод меняет поведение на живых
+  деньгах → **DEV-245** с baseline-замером.
+- 🔴🔴 **ARCH-128 поднят в приоритет** (запрос Егора): `limit_lifecycle` — временный модуль; правильный конец —
+  лупы зовут `ExecutionSphere.open()`, а не пишут в `simulated_trades` мимо сферы. Это корень класса багов.
+- ✅ Замер: `tests/unit/test_limit_lifecycle.py` **8/8** (таблица истинности на реальных режимах) +
+  `test_limit_sources_in_lifecycle` 2/2 · py_compile ×6 · smoke-импорт лупов (циклов нет).
+- Файлы: +`core/execution/limit_lifecycle.py`, +`tests/unit/test_limit_lifecycle.py`; правлены 5 лупов.
+
+## [19.10 UTC] Агент: Developer (Даат) — DEV-243.1+243.2: SIM-поток paused-источника доведён до sim_fill
+- ✅ **DEV-243.1 (🔴) сделан.** Корень: `impulse_fib_runner.py` ветка `if tid and not oid → CANCELLED`
+  убивала SIM-заявку источника с выключенной биржей (oid пуст ПО ЗАМЫСЛУ) ДО того, как `sim_fill`
+  рассудит её по свече. Отсюда 448 заявок / 0 филлов у `impulse_fib_15m` за октябрь.
+- ✅ Фикс: развилка по политике `_exch_on = trades_on_exchange(SRC)`. Биржа ВКЛ без oid → CANCELLED
+  (защита TSL, ARB #58349 цела). Биржа ВЫКЛ → новый `radar_armed_loop._mark_pending_sim` (не требует oid)
+  → `PENDING_ENTRY` → `sim_fill.resolve_sim_pending` судит по свече.
+- ✅ **DEV-243.2 (🟡):** код-близнец в `choch_wavec_loop.py:364` закрыт той же развилкой. Оба choch `live` →
+  поведение не изменилось, латентная ловушка снята.
+- ⚠️ **НАХОДКА вне рамки:** `ote_observer_loop:492-501` — ТОТ ЖЕ дефект, и `ote_nested` реально `mode: off`
+  (а не `live`, как предполагала 243.2). НЕ правлен: за октябрь 0 строк ote → дефект СПЯЩИЙ. Флагнут в TASKS.
+- 🔄 **DEV-243.3 (вахта «заявки есть, филлов 0 за сутки») — НЕ сделана**, отдельный watch-скрипт + pm2.
+- ✅ Проверено: py_compile ×3 · функц. тест маркеров (SIM→PENDING только через `_sim`, живую строку не трогает) ·
+  `test_limit_sources_in_lifecycle` 2/2 · флаги боя (`radar_armed.enabled`, 15m enabled/shadow=false) — цепочка жива.
+- Правлены: `bot/loops/radar_armed_loop.py` (новый `_mark_pending_sim`), `bot/loops/impulse_fib_runner.py`,
+  `bot/loops/choch_wavec_loop.py`. **Старые 448 CANCELLED не воскрешают** — форвард-замер стартует заново.
+- ➡️ Решение Егору: чинить исполнение дальше (243.3 вахта) или оставить как есть; `ote_observer` править при возврате OTE.
+
 ## [19.10 ~12:00 UTC] Агент: Architect (Даат) — разбор TASKS до 13 живых задач, план от чистоты данных
 - ✅ **Аудит актуальности TASKS.md закончен** (`docs/TASKS_AUDIT_2026-10-17.md`, 3 батча):
   живых **13 из 310**. Сделано 30 · поглощено 29 · устарело 29 · пауза до оплаты 51 · заморожено 23 · бэклог 18.
@@ -460,8 +494,21 @@
   настоящий вердикт (вахта: advisor ✅, прошёл content-check).
 - ✅ **коммит `182e801`**: `daily_trade_review` → pm2 `trade-review` cron `0 5 * * *` (раньше 595 ч никто не звал).
   vision-вызов получил fallback на 429 (писал `[vision error]` в файл без запасной — класс слоя 2).
-- 🔧 компас news_sphere падал «рой не ответил»: конкурировал с потоком новостей за qwen (classify_cheap).
-  Дал компасу role=`reason_strong` (groq/gpt-oss-120b — своя квота). Проверяю прогон.
+- ✅ компас news_sphere падал «рой не ответил»: конкурировал с потоком новостей за qwen (classify_cheap).
+  Дал компасу role=`reason_strong` (groq/gpt-oss-120b — своя квота). Коммит `34cdb92` (19.10, висел
+  незакоммиченным 5 дней — работал в бою). Подтверждено: compass_log пишется каждый час 14–19.10.
+
+## [19.10 12:40 UTC] Агент: Developer (Даат) — проверка системы LLM-ролей спустя 5 дней
+- ✅ Вахта `llm-health`: **0 из 7 задач молчит**. Все три слоя (роли/громкий отказ/вахта от 13–14.10) держатся:
+  бриф сессии · разбор сделок (cron 05:00) · дайджест логов · советник (вердикт, не заглушка) · новости ·
+  недельный дайджест · компас — все ✅. Докоммичен висевший 5 дней компас-фикс.
+- ✅ `message_composer` (коммит `f09f098`): anthropic (пакет не стоит) → `ask_role("chat_fast")`, ключ кеша
+  без description (7800→28 вызовов). Удалён осиротевший `_load_key_from_config`. Активно после рестарта oko-bot.
+- ✅ Oracle дашборда (коммит `ac08336`): ручной список провайдеров → `ask_role("reason_strong")`. После рестарта дашборда.
+- 🔴 7 Gemini-инструментов НЕ переведены — осознанно (Lean): специфичны (vision, system_instruction, 1M контекст),
+  ask_role не покрывает; УЖЕ живут через fallback+LLM_PROXY (13-14.10), вахта стережёт. Детали: llm_registry_project.md.
+- ИТОГ сессии LLM-ролей (13-19.10): слой 1 (роли) + слой 2 (громкий отказ) + слой 3 (вахта) + переведены
+  советник, news_sphere, компас, message_composer, Oracle, trade_analyzer. Вахта: 0/7 молчит. План закрыт.
 - 🔄 Осталось: 7 Gemini-инструментов и Oracle дашборда → на роли · ключ кеша `message_composer`
   (включит бесплатную интерпретацию, замер: 28 вызовов вместо 7800).
 

@@ -359,35 +359,12 @@ async def choch_wavec_loop(bot, inst: Instance = None):
                 except Exception:                              # noqa: BLE001
                     pass
                 try:
-                    tid = getattr(res, "trade_id", None)
-                    oid = getattr(res, "exchange_order_id", None)
-                    if tid and not oid:
-                        # ордер на биржу не ушёл → позиции нет → и записи быть не должно
-                        with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
-                            _c.execute("UPDATE simulated_trades SET status='CANCELLED' "
-                                       "WHERE id=? AND status='OPEN' AND (exchange_order_id "
-                                       "IS NULL OR exchange_order_id='') AND "
-                                       "(actual_entry_price IS NULL OR actual_entry_price<=0)",
-                                       (int(tid),))
-                            _c.commit()
-                        logger.warning("[%s] #%s ордер на биржу не ушёл → CANCELLED", inst.tag, tid)
-                    elif tid:
-                        from bot.loops.radar_armed_loop import _mark_pending
-                        if _mark_pending(bot.trade_simulator.db_path, int(tid)):
-                            logger.info("[%s] #%s → PENDING_ENTRY (лимитка ждёт фила)", inst.tag, tid)
-                        # окно гонки: TSL мог зацепить строку до перевода в PENDING
-                        with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
-                            _r = _c.execute(
-                                "UPDATE simulated_trades SET stop_loss=original_sl, "
-                                "tsl_activated=0 WHERE id=? AND original_sl IS NOT NULL "
-                                "AND original_sl>0 AND stop_loss<>original_sl "
-                                "AND (actual_entry_price IS NULL OR actual_entry_price<=0)",
-                                (int(tid),))
-                            _c.commit()
-                            if _r.rowcount:
-                                logger.warning("[%s] #%s стоп восстановлен из original_sl", inst.tag, tid)
+                    # 🜂 DEV-244: единое правило исхода лимитной заявки (Сфера Исполнения).
+                    # Раньше тут был код-близнец, убивавший SIM-заявки impulse_fib_15m (DEV-243.2).
+                    from core.execution.limit_lifecycle import finalize_limit_entry
+                    finalize_limit_entry(bot.trade_simulator.db_path, res, inst.src, tag=inst.tag, log=logger)
                 except Exception as _mp:                       # noqa: BLE001
-                    logger.warning("[%s] mark_pending: %s", inst.tag, _mp)
+                    logger.warning("[%s] finalize_limit_entry: %s", inst.tag, _mp)
 
             conn.commit()
             stats = dict(conn.execute(
