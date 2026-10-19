@@ -288,7 +288,7 @@ def _use_fvg_canon() -> bool:
     return _FVG_CANON
 
 
-def _fvg_from_canon(df: pd.DataFrame) -> FVGAnalysis:
+def _fvg_from_canon(df: pd.DataFrame, min_size_pct: float = 0.0) -> FVGAnalysis:
     """smc_engine.detect_fvg → FVGAnalysis. Контракт сохранён полностью."""
     from core.smc.smc_engine import detect_fvg as _canon_fvg
 
@@ -310,6 +310,9 @@ def _fvg_from_canon(df: pd.DataFrame) -> FVGAnalysis:
         if i is None:
             continue
         gap = top - bottom
+        size_pct = gap / mid * 100.0 if mid > 0 else 0.0
+        if size_pct < min_size_pct:        # 19.10: канон чтит шумовой фильтр колл-сайта (models.py:249), раньше игнорил
+            continue
         mitigated = mit is not None
         # Степень захода в зону — ВЕКТОРНО. Раньше здесь стоял цикл с .iloc[j]
         # по каждому бару каждой зоны: на 1h/400 это давало 21 мс против 3.
@@ -336,7 +339,7 @@ def _fvg_from_canon(df: pd.DataFrame) -> FVGAnalysis:
             bottom=bottom,
             midpoint=mid,
             index=max(0, i - 1),          # импульсная свеча — как в прежней реализации
-            size_pct=gap / mid * 100.0 if mid > 0 else 0.0,
+            size_pct=size_pct,
             mitigated=mitigated,
             mitigation_pct=mpct,
             mitigation_index=m_idx,
@@ -388,7 +391,7 @@ def detect_fvg(
     # ARCH-137.5: единый источник зон — эталон. Откат: smc.fvg_canon: false
     if _use_fvg_canon():
         try:
-            return _fvg_from_canon(df)
+            return _fvg_from_canon(df, min_size_pct)
         except Exception as e:
             logger.debug("detect_fvg canon error: %s", e, exc_info=True)
             # падать нельзя — потребители в горячем пути; идём прежним путём

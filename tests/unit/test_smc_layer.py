@@ -215,21 +215,20 @@ class TestFVG:
         assert "BULL_FVG" in repr(fvg)
 
     def test_min_size_filter(self, monkeypatch):
-        """Фильтр min_size_pct живёт в RAW-пути detect_fvg (строки 108-109). 🔴 14.10 (ARCH-148.7):
-        под боевым конфигом `smc.fvg_canon: true` detect_fvg уходит в эталон `_fvg_from_canon`, который
-        min_size_pct ИГНОРИРУЕТ — параметр молча не работает (живой колл-сайт core/smc/models.py:249
-        теряет шумовой фильтр). Правка канона — измеряемое решение (вынесено Егору). Здесь форсируем
-        raw-путь, чтобы проверить сам фильтр; следом — что канон его не применяет."""
+        """Фильтр min_size_pct отсекает мелкие FVG — в ОБОИХ путях. 🟢 19.10: канон (`smc.fvg_canon: true`)
+        теперь ЧТИТ min_size_pct (_fvg_from_canon фильтрует по size_pct), раньше молча игнорировал и живой
+        колл-сайт core/smc/models.py:249 терял шумовой фильтр. Проверяем оба пути: порог 50% отсекает FVG 0.5%."""
         from core.smc import fvg as fvg_mod
         df = _make_with_fvg()
 
-        monkeypatch.setattr(fvg_mod, "_use_fvg_canon", lambda: False)   # raw-путь: фильтр обязан сработать
-        result_strict = fvg_mod.detect_fvg(df, min_size_pct=50.0)       # 50% — никакой FVG 0.5% не пройдёт
-        assert len(result_strict.all_fvgs) == 0
+        monkeypatch.setattr(fvg_mod, "_use_fvg_canon", lambda: False)   # raw-путь
+        assert len(fvg_mod.detect_fvg(df, min_size_pct=50.0).all_fvgs) == 0
 
-        monkeypatch.setattr(fvg_mod, "_use_fvg_canon", lambda: True)    # канон: min_size_pct не применяется
-        result_canon = fvg_mod.detect_fvg(df, min_size_pct=50.0)
-        assert len(result_canon.all_fvgs) >= 1, "канон игнорирует min_size_pct (документируем пробел)"
+        monkeypatch.setattr(fvg_mod, "_use_fvg_canon", lambda: True)    # канон — теперь тоже применяет фильтр
+        assert len(fvg_mod.detect_fvg(df, min_size_pct=50.0).all_fvgs) == 0
+
+        # контроль: с нулевым порогом канон зоны ВИДИТ (фильтр не режет лишнего)
+        assert len(fvg_mod.detect_fvg(df, min_size_pct=0.0).all_fvgs) >= 1
 
 
 # ===========================================================================
