@@ -260,6 +260,10 @@ class TradingAlertBot:
         from bot.handlers.core_handlers import get_router as core_router
         from bot.handlers.callback_handlers import get_router as callback_router
         from bot.handlers.notif_handlers import get_router as notif_router
+        from bot.filters.owner_only import OwnerOnlyMiddleware, owner_ids_from_config
+
+        # F05 (аудит 10.10): всё запрещено, кроме владельца — проверка на входе всех апдейтов
+        self.dp.update.outer_middleware(OwnerOnlyMiddleware(owner_ids_from_config(self.config)))
 
         # FSM-роутеры включаются ДО catch-all F.text (core_router)
         self.dp.include_router(sub_router(self))
