@@ -59,4 +59,4 @@ class OwnerOnlyMiddleware(BaseMiddleware):
             elif cb is not None:
                 await cb.answer(DENY_TEXT, show_alert=True)
         except Exception as e:
-            logger.debug("[ACCESS] не смог ответить %s: %s", uid, e)
+            logger.debug("[ACCESS] не смог ответить чужому аккаунту: %s", e)
