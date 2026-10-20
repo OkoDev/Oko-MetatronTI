@@ -38,8 +38,8 @@ class OwnerOnlyMiddleware(BaseMiddleware):
         if user is not None and user.id in self.owner_ids:
             return await handler(event, data)
         uid = getattr(user, "id", None)
-        logger.warning("[ACCESS] отказ: user_id=%s username=%s тип=%s",
-                       uid, getattr(user, "username", None), getattr(event, "event_type", "?"))
+        # D-009 (152-ФЗ): id и имя чужого человека — персональные данные, в лог их не пишем
+        logger.warning("[ACCESS] отказ чужому аккаунту (тип=%s)", getattr(event, "event_type", "?"))
         await self._notice(event, uid)
         return None
 
