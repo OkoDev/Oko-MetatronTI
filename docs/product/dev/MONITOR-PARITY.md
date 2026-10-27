@@ -22,10 +22,10 @@
 | Состав: мои позиции + число | `b_pos`, `posn` | `/api/account` | 🟡 «в позиции»: число ✅, состав Soon (тикеры владельца) |
 | Состав: в игре + число | `b_play`, `playn` | `/api/inplay` | ✅ |
 | Состав: избранное + число | `b_fav`, `favn`, localStorage `oko_fav` | — | ✅ |
-| Уровни Куба (тумблер) | `b_lv` → `pullLv()` 60 с | `/api/levels` | ❌ |
-| Уровни Куба: меню слоёв | `LAYERS`: импульс OKO (H/L), сломы крупные (CHoCH/BOS), сломы мелкие, FVG, OB, EQH/EQL, пивоты дня, пивоты недели, бейджи; localStorage `oko_layers` | `/api/levels` (`detect_fvg`, `detect_order_blocks`, `detect_equal_levels`, `pivot_points`) | ❌ |
-| WT (панель под графиком) | `b_wt`, `calcWt()` 1:1 с `indicators.py` n1=10 n2=21, линии ±60/±80 | из баров | ❌ |
-| ATRTrend | `b_atr` → `klines&atr=1`, перекраска баров + линия `drawAtr` | `/api/klines?atr=1` | ❌ |
+| Уровни Куба (тумблер) | `b_lv` → `pullLv()` 60 с | `/api/levels` | ✅ (по умолчанию выкл, как в :8010) |
+| Уровни Куба: меню слоёв | `LAYERS`: импульс OKO (H/L), сломы крупные (CHoCH/BOS), сломы мелкие, FVG, OB, EQH/EQL, пивоты дня, пивоты недели, бейджи; localStorage `oko_layers` | `/api/levels` (`detect_fvg`, `detect_order_blocks`, `detect_equal_levels`, `pivot_points`) | ✅ 9 пунктов, localStorage `oko_layers` |
+| WT (панель под графиком) | `b_wt`, `calcWt()` 1:1 с `indicators.py` n1=10 n2=21, линии ±60/±80 | из баров | ✅ панель под графиком, облако и зоны ±60, синхрон со скроллом |
+| ATRTrend | `b_atr` → `klines&atr=1`, перекраска баров + линия `drawAtr` | `/api/klines?atr=1` | ✅ ломаная с разрывом на развороте + перекраска баров |
 | Волны | `b_wv` | `/api/waves` (`mark_impulse`) | ❌ |
 | Алерты: тумблер | `b_al`, звук, уведомления | — | ❌ |
 | Алерты: меню | `ALT`: моя линия, пивот D/W, вход в FVG/OB, смена ATRTrend, кросс WT, всплеск объёма ≥3×, звук, уведомления; лента; localStorage `oko_alerts` | цена + уровни | ❌ |
@@ -52,7 +52,7 @@
 | Объём по цвету свечи | `vs.setData(color)` | ✅ |
 | Точность цены | `precOf()` | ✅ |
 | Живая цена 3 с → незакрытый бар | `pullPx`, `cs.update` | ✅ |
-| Проекция уровней в правом поле | `drawOv` (canvas поверх) | ❌ |
+| Проекция уровней в правом поле | `drawOv` (canvas поверх) | ✅ |
 | Бейджи уровней в шапке | `pullLv` → `.fl` | ❌ |
 | WT-панель синхронно со скроллом графика | `subscribeVisibleLogicalRangeChange` | ❌ |
 | Открытие из Повестки с планом сделки | `?sym=&side=&entry=&sl=&tp=` → `PLAN` | ❌ |
