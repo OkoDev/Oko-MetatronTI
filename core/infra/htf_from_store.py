@@ -30,6 +30,12 @@ _M15 = 900_000
 _COLS = ["time", "open", "high", "low", "close", "volume"]
 _RETRY_SEC = 30.0          # хранилище отстаёт → не читать диск чаще этого
 _LOG_EVERY_SEC = 600.0
+# ARCH-153 (30.10, DS): на границе бара хранилище догоняет ~4 мин, и КАЖДЫЙ отказ
+# `store_behind`/`no_15m_stale` уходил в REST по всей вселенной. Замер: 1h 10 939 и 4h 3 507
+# запросов за 28.10, а риск бана на запрос у них 11,6% и 14,2% против 0,9% у 1m — именно эти
+# залпы и давали 100410. Отдаём последнюю удачную сборку, пока хранилище догоняет; REST
+# остаётся только когда сборки ещё не было (старт процесса) или она старше _LAST_GOOD_SEC.
+_LAST_GOOD_SEC = 600.0
 
 
 def forming_from_15m(df15: Optional[pd.DataFrame], tf: str, now_ms: int, why: Optional[list] = None) -> Optional[dict]:
@@ -84,6 +90,7 @@ class HtfStore:
         self.mode = mode
         self._depth = depth                  # глубина чтения по ТФ (канон ApiEngine + запас)
         self._closed: dict[tuple, tuple[pd.DataFrame, float]] = {}
+        self._last_good: dict[tuple, tuple[pd.DataFrame, float]] = {}   # ARCH-153: сборка, пока стор догоняет
         self.stats: Counter = Counter()
         self._diff_examples: list[str] = []
         self._why_examples: list[str] = []
@@ -114,15 +121,35 @@ class HtfStore:
         return ent[0], ent[2]
 
     async def get(self, symbol: str, tf: str, limit: int, df15: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
-        """Режим on: собранный DataFrame или None (→ REST)."""
+        """Режим on: собранный DataFrame или None (→ REST).
+
+        ARCH-153: None отдаём только если сборки ещё не было или она старше _LAST_GOOD_SEC.
+        Пока хранилище догоняет границу (≈4 мин), отдаём последнюю удачную сборку — иначе
+        каждый такой отказ превращался в REST-запрос по всей вселенной (главный источник 100410).
+        """
+        key = (base_of(symbol), tf)
         now_ms = int(time.time() * 1000)
         closed, exhausted = await self._closed_for(symbol, tf, now_ms, limit - 1)
         if closed is None:
             self.stats["skip_synth_or_err"] += 1
-            return None
+            self._maybe_log()
+            return self._last_good_frame(key, tf, limit)
         df, why = compose(closed, df15, tf, limit, now_ms, exhausted)
         self._count(symbol, tf, why)
+        if df is not None:
+            self._last_good[key] = (df, time.monotonic())
         self._maybe_log()
+        return df if df is not None else self._last_good_frame(key, tf, limit)
+
+    def _last_good_frame(self, key: tuple, tf: str, limit: int) -> Optional[pd.DataFrame]:
+        """Последняя удачная сборка, если она не старше _LAST_GOOD_SEC и глубже запрошенного."""
+        ent = self._last_good.get(key)
+        if ent is None:
+            return None
+        df, when = ent
+        if time.monotonic() - when > _LAST_GOOD_SEC or len(df) < limit:
+            return None
+        self.stats[f"{tf}_served_last_good"] += 1
         return df
 
     def _count(self, symbol: str, tf: str, why: str) -> None:
