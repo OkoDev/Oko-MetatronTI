@@ -69,6 +69,26 @@ def episode_severity(heap: int, warn: int = _CATCH_HEAP_WARN, episode: int = _CA
     return "ok"
 
 
+# 🔴 31.10 06:44 (живой замер): сторожа убил бота на 20 437 МБ, а очередь таймеров была **25** —
+# значит эпизоды бывают РАЗНЫЕ, и одного «таймерного» признака мало. Поэтому ловец меряет ещё и
+# приватную память процесса (то же число, что видит `pm2_guard`), и порог памяти ставится ДО потолка
+# сторожа (10 240 МБ), чтобы успеть снять улики, а не узнать о разгоне из «ЛЕЧЕНИЕ».
+_CATCH_RSS_WARN_MB = 4_096.0
+_CATCH_RSS_EPISODE_MB = 6_144.0
+
+
+def catch_severity(heap: int, rss_mb, warn: int = _CATCH_HEAP_WARN, episode: int = _CATCH_HEAP_EPISODE,
+                   rss_warn: float = _CATCH_RSS_WARN_MB,
+                   rss_episode: float = _CATCH_RSS_EPISODE_MB) -> str:
+    """'ok' | 'warn' | 'episode' по ДВУМ признакам: очередь таймеров И память процесса."""
+    rss = None if rss_mb is None else float(rss_mb)
+    if heap >= episode or (rss is not None and rss >= rss_episode):
+        return "episode"
+    if heap >= warn or (rss is not None and rss >= rss_warn):
+        return "warn"
+    return "ok"
+
+
 class PriceWS:
     """Цена по WS: N соединений батчами, bind мимо VPN, публикация в шину с порогом."""
 
@@ -362,13 +382,21 @@ class PriceWS:
             pass
 
     def _catch_snapshot(self) -> dict:
-        """Срез «здоровья» этого цикла: очередь таймеров, счётчики приёма, состояние подписок."""
+        """Срез «здоровья» этого цикла: очередь таймеров, память процесса, счётчики приёма, подписки."""
         loop = asyncio.get_running_loop()
+        heap = len(getattr(loop, "_scheduled", ()))
+        rss = None
+        try:                                   # то же число, что видит pm2_guard (PrivateUsage)
+            from core.infra.mem_census import _private_mb
+            rss = _private_mb()
+        except Exception:                      # noqa: BLE001 — ловец не смеет падать
+            rss = None
         snap = dict(self.anom)
         snap.update({
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "uptime_sec": int(time.time() - self._started_at) if self._started_at else 0,
-            "heap": len(getattr(loop, "_scheduled", ())),
+            "heap": heap,
+            "rss_mb": rss,
             "timers_cancelled": getattr(loop, "_timer_cancelled_count", 0),
             "ready": len(getattr(loop, "_ready", ())),
             "updates": self.stats["updates"],
@@ -376,8 +404,9 @@ class PriceWS:
             "pairs": len(self._prices),
             "want": self._fast_state["want"],
             "subscribed": self._fast_state["subscribed"],
-            "severity": episode_severity(len(getattr(loop, "_scheduled", ())),
-                                         warn=_CATCH_HEAP_WARN, episode=_CATCH_HEAP_EPISODE),
+            "severity": catch_severity(heap, rss, warn=_CATCH_HEAP_WARN, episode=_CATCH_HEAP_EPISODE,
+                                       rss_warn=_CATCH_RSS_WARN_MB,
+                                       rss_episode=_CATCH_RSS_EPISODE_MB),
             "events": list(self._events)[-12:],
         })
         return snap
@@ -402,15 +431,20 @@ class PriceWS:
                     rec["recv_per_s"] = round((rec["recv"] - prev["recv"]) / dt, 1)
                     rec["timeout_per_s"] = round((rec["timeout"] - prev["timeout"]) / dt, 1)
                     rec["spin_per_s"] = round((rec["spin"] - prev["spin"]) / dt, 1)
+                    rec["rss_delta"] = (round(rec["rss_mb"] - prev["rss_mb"], 1)
+                                        if rec.get("rss_mb") is not None and prev.get("rss_mb") is not None
+                                        else None)
                 else:
                     rec["heap_delta"] = rec["recv_per_s"] = rec["timeout_per_s"] = rec["spin_per_s"] = 0
+                    rec["rss_delta"] = None
                 prev = rec
                 sev = rec["severity"]
                 if sev != "ok":
-                    logger.error("[PriceWS][CATCH] %s: таймеров %d (+%d за %0.0f с) · "
-                                 "приём %s/с · таймаутов %s/с · спин %s/с · отписки %d · "
+                    logger.error("[PriceWS][CATCH] %s: таймеров %d (+%d за %0.0f с) · память %s МБ "
+                                 "(+%s) · приём %s/с · таймаутов %s/с · спин %s/с · отписки %d · "
                                  "подписок %d/%d · конн %d, реконнектов %d",
                                  sev.upper(), rec["heap"], rec["heap_delta"], _CATCH_SEC,
+                                 rec.get("rss_mb"), rec.get("rss_delta"),
                                  rec["recv_per_s"], rec["timeout_per_s"], rec["spin_per_s"],
                                  rec["unsub"], rec["subscribed"], rec["want"],
                                  rec["conns"], rec["reconn"])
@@ -440,11 +474,11 @@ class PriceWS:
             from scripts._alert import notify as _notify
             state = {"episode": "EPISODE", "warn": "WARN", "ok": "OK"}[rec["severity"]]
             detail = (f"таймеров {rec['heap']:,} (+{rec['heap_delta']:,}) · "
+                      f"память {rec.get('rss_mb')} МБ (+{rec.get('rss_delta')}) · "
                       f"приём {rec['recv_per_s']}/с · таймаутов {rec['timeout_per_s']}/с · "
                       f"спин {rec['spin_per_s']}/с · отписки {rec['unsub']} · "
                       f"подписок {rec['subscribed']}/{rec['want']} · "
-                      f"конн {rec['conns']} · реконнектов {rec['reconn']} · "
-                      f"память процесса неизвестна (см. mem_census)")
+                      f"конн {rec['conns']} · реконнектов {rec['reconn']}")
             _notify("price_ws_episode", state,
                     title=f"ARCH-154 · ловец эпизодов PriceWS · {state}",
                     tg_text=f"*ARCH-154 · PriceWS* — {state}\n{detail}",
@@ -503,7 +537,7 @@ def _open_trade_symbols() -> set:
 
 def start_price_ws(bot):
     """Запуск в ОТДЕЛЬНОМ потоке со своим loop — торговый loop не трогаем."""
-    global _CATCH_SEC, _CATCH_HEAP_WARN, _CATCH_HEAP_EPISODE
+    global _CATCH_SEC, _CATCH_HEAP_WARN, _CATCH_HEAP_EPISODE, _CATCH_RSS_WARN_MB, _CATCH_RSS_EPISODE_MB
     from core.infra.config_loader import config
 
     if not config.get("performance.price_ws_enabled", False):
@@ -514,6 +548,10 @@ def start_price_ws(bot):
         _CATCH_HEAP_WARN = int(config.get("performance.price_ws_catch_heap_warn", _CATCH_HEAP_WARN))
         _CATCH_HEAP_EPISODE = int(config.get("performance.price_ws_catch_heap_episode",
                                             _CATCH_HEAP_EPISODE))
+        _CATCH_RSS_WARN_MB = float(config.get("performance.price_ws_catch_rss_warn_mb",
+                                              _CATCH_RSS_WARN_MB))
+        _CATCH_RSS_EPISODE_MB = float(config.get("performance.price_ws_catch_rss_episode_mb",
+                                                 _CATCH_RSS_EPISODE_MB))
     except Exception as _c_e:                                  # noqa: BLE001 — как в замерах
         logger.warning("[PriceWS][CATCH] настройки не прочитаны (%s) — работают умолчания", _c_e)
     symbols = list(getattr(bot.data_collector, "usdt_pairs", []) or [])

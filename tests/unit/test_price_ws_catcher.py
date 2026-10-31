@@ -22,6 +22,27 @@ def test_episode_severity_thresholds():
     assert pw.episode_severity(61_370_210) == "episode"         # худший замер 28.10
 
 
+def test_catch_severity_sees_memory_as_well_as_timers():
+    """31.10 06:44: бота убили на 20 ГБ при очереди таймеров 25 — значит память нужен свой признак."""
+    assert pw.catch_severity(2, 1500.0) == "ok"
+    assert pw.catch_severity(2, None) == "ok"                    # память неизвестна — не падаем
+    assert pw.catch_severity(2, 5000.0) == "warn"                # только память
+    assert pw.catch_severity(2, 7000.0) == "episode"             # только память
+    assert pw.catch_severity(900_000, 1500.0) == "episode"       # только таймеры
+    assert pw.catch_severity(60_000, 4500.0) == "warn"           # оба «warn»
+
+
+def test_snapshot_reports_process_memory_field():
+    async def _run():
+        feed = pw.PriceWS(["BTC/USDT:USDT"], fast_channel="")
+        feed._started_at = time.time()
+        return feed._catch_snapshot()
+
+    snap = asyncio.run(_run())
+    assert "rss_mb" in snap and (snap["rss_mb"] is None or snap["rss_mb"] > 0)
+    assert snap["severity"] in ("ok", "warn", "episode")
+
+
 def test_snapshot_counts_own_loop_timers_and_counters():
     async def _run():
         loop = asyncio.get_running_loop()

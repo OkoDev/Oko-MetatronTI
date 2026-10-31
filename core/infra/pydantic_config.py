@@ -145,6 +145,8 @@ class PerformanceSection(BaseModel):
     price_ws_catch_sec: float = Field(default=10.0, ge=1.0, le=300.0)
     price_ws_catch_heap_warn: int = Field(default=50_000, ge=100, le=10_000_000)
     price_ws_catch_heap_episode: int = Field(default=500_000, ge=1000, le=100_000_000)
+    price_ws_catch_rss_warn_mb: float = Field(default=4096.0, ge=100.0, le=65536.0)
+    price_ws_catch_rss_episode_mb: float = Field(default=6144.0, ge=100.0, le=65536.0)
     rest_bind_ip_prefix: str = ""   # N11: REST мимо VPN (пусто = через туннель)
     sim_time_exit_hours: int = Field(default=48, ge=0, le=10000)  # анти-орфан SIM
 
