@@ -57,14 +57,22 @@ _DEFAULT_TTL: float = 60.0
 #   1h → 400: столько просит двухмасштабная нога Сферы 20 (замер: при 400 совпало
 #             6/6 с эталоном 1000, при 250 — 3/6);
 #   4h → 200, 1d → 200: как было до правки (DS-322).
+# 🔴 31.10.2026 (DS, ARCH-153.2) — замер ПРИЧИН промахов, а не догадка: за цикл 294 REST,
+# из них 273 — ГЛУБИНА (`глубина 100<600` 184, `200<500` 55, `150<600` 21, `100<150` 13),
+# TTL — всего 16. Значит откат 02.09 промахнулся не в причину: канон ставили 150/250, а
+# потребители уже просят 600/500 — канон НИЖЕ фактического запроса, и запись снова выбивается.
+# Здесь канон = фактический максимум по логу промахов, с запасом от глубины 1000.
 _CANON_LIMIT: dict[str, int] = {
-    "1h": 400, "4h": 200, "1d": 200,
+    "3m": 600, "5m": 500, "15m": 600,
+    "1h": 400, "4h": 200, "1d": 200,   # 1h/4h/1d — как было (замер 02.09), не трогаю
 }
 
 # ── Инструментация cache-hit vs REST per TF (диагностика market_ws/REST за цикл) ──
 from collections import Counter as _Counter
 _ohlcv_cache_hit: _Counter = _Counter()   # TF → сколько раз отдан из кэша (WS/TTL свежий)
 _ohlcv_cache_miss: _Counter = _Counter()  # TF → сколько раз пошёл в реальный REST
+_miss_reason: _Counter = _Counter()       # причина промаха (ARCH-153.2)
+_rebuild_stats: _Counter = _Counter()     # локальная сборка записи: ok / fail / not_live (ARCH-153)
 
 
 def get_ohlcv_cache_stats() -> dict:
@@ -75,12 +83,16 @@ def get_ohlcv_cache_stats() -> dict:
         m = _ohlcv_cache_miss.get(tf, 0)
         tot = h + m
         out[tf] = {"hit": h, "rest": m, "hit_rate": round(h / tot, 3) if tot else 0.0}
+    out["_miss_reason"] = dict(_miss_reason.most_common(6))
+    out["_rebuild"] = dict(_rebuild_stats)   # ARCH-153: сколько записей собрано локально (не REST)
     return out
 
 
 def reset_ohlcv_cache_stats() -> None:
     _ohlcv_cache_hit.clear()
     _ohlcv_cache_miss.clear()
+    _miss_reason.clear()
+    _rebuild_stats.clear()
 
 
 # 🔴 29.09 ДЫРЫ В WS-РЯДАХ. merge дописывал пришедший бар без проверки шага, а снимок с диска поднимался как есть:
@@ -100,6 +112,19 @@ def _has_gap(df: pd.DataFrame, tf: str) -> bool:
     return bool((df["time"].astype("int64").diff().iloc[1:] != step).any())
 
 
+def _px_host(url) -> str:
+    """host:port прокси для логов — без логина и пароля (они живут в самом URL)."""
+    if not url:
+        return "direct"
+    try:
+        tail = str(url).split("://", 1)[-1]
+        if "@" in tail:
+            tail = tail.rsplit("@", 1)[1]
+        return tail.rstrip("/")
+    except Exception:                                   # noqa: BLE001 — лог не должен падать
+        return "proxy"
+
+
 class OhlcvCache:
     """TTL-кеш с LRU eviction.
 
@@ -107,11 +132,25 @@ class OhlcvCache:
     maxsize=5000 ≈ 600 пар × 8 TF × запас на разные limit-запросы.
     """
 
+    _REBUILD_COOLDOWN_SEC = 60.0     # попытки локальной сборки одной пары не чаще раза в минуту
+
     def __init__(self, maxsize: int = 5000):
         self._data: OrderedDict = OrderedDict()
         self._maxsize = maxsize
+        self._rebuild_at: dict = {}     # (symbol, tf) → когда последний раз пробовали собрать
         self.gap_drops = 0                  # записей сброшено из-за дыры (бар через пропуск)
         self._gap_logged = time.monotonic()
+        # ARCH-153 (31.10, DS): ЛОКАЛЬНОЕ ВОССТАНОВЛЕНИЕ записи вместо REST.
+        # Замер остатка: [OHLCV-CACHE] 01:47 — промахи `нет записи` 1093, REST 1213 за круг,
+        # 3m/5m hit 65%/56% (в обычном круге 95–100%). Механика: любой рестарт бота оставляет
+        # в снимке последний бар СТАРШЕ текущего, первое же WS-сообщение даёт `gap` → запись
+        # сбрасывается → скан просит 600 баров у биржи по ~552 парам на ТФ → залп ~1100
+        # запросов, баны, круг 18 мин, и heartbeat-watchdog рестартит бота снова (петля).
+        # Восстановление берёт закрытые бары из хранилища Сферы 1 (замер: 3m/5m — 610 монет,
+        # последний закрытый бар отстаёт ровно на один) + текущую свечу из WS. Биржа не зовётся.
+        self.rebuild_hook = None            # (key, limit) → DataFrame | None, ставит WS-читатель
+        self.rebuild_enabled = True         # config market_store.ltf_rebuild
+        self.rebuild_stats = _Counter()     # свой счётчик: ok / fail (агрегат — в get_ohlcv_cache_stats)
         # MARKET-WS Этап 2: cross-thread доступ (WS-поток пишет merge ↔ scan main-loop читает get).
         # RLock — reentrant (merge() вызывает self.set() внутри, иначе deadlock).
         self._lock = threading.RLock()
@@ -140,6 +179,59 @@ class OhlcvCache:
                 return None
             return entry["df"].copy()
 
+    def why_miss(self, key: tuple, limit: int, ttl: float) -> str:
+        """Почему get() не отдал запись — для диагностики REST по ТФ (ARCH-153.2)."""
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                return "нет записи"
+            if (time.monotonic() - entry["ts"]) >= ttl:
+                return "TTL истёк"
+            if entry["limit"] < limit:
+                return f"глубина {entry['limit']}<{limit}"
+            return "иное"
+
+    def rebuild(self, key: tuple, limit: int) -> Optional[pd.DataFrame]:
+        """ARCH-153 (31.10): собрать запись заново ЛОКАЛЬНО, не ходя на биржу.
+
+        Зовётся в двух местах:
+          · `_drop_on_gap` — WS принёс бар через пропуск (обычно после рестарта: запись из
+            снимка отстала на несколько баров). Раньше запись сбрасывалась целиком, и скан
+            тянул 600 баров у биржи по всей вселенной;
+          · `get_ohlcv` — записи нет вовсе (`skip_no_cache`/вытеснение).
+        Собирает закрытые бары из хранилища Сферы 1 + текущую свечу из WS (хук ставит
+        `QueueReaderThread`, у него оба источника). Ничего не собралось → None → прежний путь.
+        """
+        hook = self.rebuild_hook
+        if hook is None or not self.rebuild_enabled:
+            return None
+        # Кулдаун на пару: живой замер 31.10 показал, что по 3m/5m сборка срабатывает, но
+        # хранилище не дотягивает до входного бара (`rebuild_gap` 567/552 за круг) — без кулдауна
+        # диск читался бы заново на каждое сообщение и каждый круг скана впустую.
+        _now = time.monotonic()
+        _last = self._rebuild_at.get(key)
+        if _last is not None and _now - _last < _REBUILD_COOLDOWN_SEC:
+            self.rebuild_stats["throttled"] = self.rebuild_stats.get("throttled", 0) + 1
+            return None
+        self._rebuild_at[key] = _now
+        try:
+            df = hook(key, limit)
+        except Exception as e:                                  # noqa: BLE001 — хранилище сбоит → REST
+            self._note_rebuild("fail")
+            logger.debug("[OhlcvCache] rebuild %s %s: %s", key[0], key[1], e)
+            return None
+        if df is None or getattr(df, "empty", True) or len(df) < 2:
+            self._note_rebuild("fail")
+            return None
+        self.set(key, df, len(df))       # глубина записи = фактическая длина (короче канона — законно)
+        self._note_rebuild("ok")
+        return df
+
+    def _note_rebuild(self, kind: str) -> None:
+        """Счёт локальных сборок: свой (на кэш) + агрегат для отчёта [OHLCV-CACHE] за круг."""
+        self.rebuild_stats[kind] += 1
+        _rebuild_stats[kind] += 1
+
     def set(self, key: tuple, df: pd.DataFrame, limit: int) -> None:
         """Записывает запись в кеш, вытесняя старейшую при переполнении."""
         with self._lock:
@@ -150,7 +242,7 @@ class OhlcvCache:
             while len(self._data) > self._maxsize:
                 self._data.popitem(last=False)
 
-    def merge(self, key: tuple, new_df: pd.DataFrame) -> str:
+    def merge(self, key: tuple, new_df: pd.DataFrame, _rebuilt: bool = False) -> str:
         """D-066 Phase B: merge новой WS свечи с существующим кешем.
 
         Args:
@@ -158,15 +250,18 @@ class OhlcvCache:
             new_df: DataFrame с колонками time/open/high/low/close/volume
                     (формат как у REST fetch_ohlcv в api_engine).
                     WS обычно даёт 1 строку — текущая активная свеча.
+            _rebuilt: служебный — второй заход после локальной сборки записи (ARCH-153),
+                    защита от повторного rebuild на том же баре.
 
         Returns:
-            'replace' | 'append' | 'init' | 'stale' | 'invalid'
+            'replace' | 'append' | 'init' | 'stale' | 'invalid' | 'rebuild_*' | 'gap'
 
         Логика:
             - Кеш пустой → init (set as-is)
             - new_df.last_time == cache.last_time → replace last row (свеча обновляется)
             - new_df.last_time > cache.last_time → append + drop oldest (новый bar открылся)
             - new_df.last_time < cache.last_time → stale (игнор)
+            - дыра (шаг больше ТФ) → локальная сборка из хранилища, иначе сброс на REST
         """
         if new_df is None or new_df.empty or "time" not in new_df.columns:
             return "invalid"
@@ -197,6 +292,10 @@ class OhlcvCache:
                         existing.iloc[-1, existing.columns.get_loc(col)] = new_df[col].iloc[-1]
                 entry["ts"] = time.monotonic()
                 return "replace"
+            # ARCH-153 (31.10): дыра — сначала собрать запись локально (см. merge_dict).
+            if (new_last_t - cache_last_t) > _TF_STEP_MS.get(key[1], 0) and not _rebuilt:
+                if self.rebuild(key, max(int(entry["limit"]), 2)) is not None:
+                    return "rebuild_" + self.merge(key, new_df, _rebuilt=True)
             if self._drop_on_gap(key, new_last_t - cache_last_t):
                 return "gap"
             # Новый bar (new_last_t > cache_last_t): append + drop oldest, держим длину неизменной
@@ -207,11 +306,12 @@ class OhlcvCache:
             entry["ts"] = time.monotonic()
             return "append"
 
-    def merge_dict(self, key: tuple, row: dict) -> str:
+    def merge_dict(self, key: tuple, row: dict, _rebuilt: bool = False) -> str:
         """ARCH-130: быстрый merge одной WS-свечи (dict) без pd.DataFrame([row]).
 
         replace-путь (90%+ случаев) = scalar df.at setter — без GIL-heavy NumPy allocation.
         append-путь (новый bar, ~раз в TF) = pd.concat как раньше, но это редко.
+        _rebuilt — служебный флаг второго захода после локальной сборки (ARCH-153).
         """
         if not row or "time" not in row:
             return "invalid"
@@ -236,6 +336,12 @@ class OhlcvCache:
                         existing.at[last_idx, col] = row[col]
                 entry["ts"] = time.monotonic()
                 return "replace"
+            # ARCH-153 (31.10): дыра — сначала собрать запись ЛОКАЛЬНО (хранилище + WS),
+            # сброс на REST только если собрать не удалось. Замер: сброс по дыре после
+            # каждого рестарта давал ~1100 REST-запросов на круг (3m/5m hit 65%/56%).
+            if (new_last_t - cache_last_t) > _TF_STEP_MS.get(key[1], 0) and not _rebuilt:
+                if self.rebuild(key, max(int(entry["limit"]), 2)) is not None:
+                    return "rebuild_" + self.merge_dict(key, row, _rebuilt=True)
             if self._drop_on_gap(key, new_last_t - cache_last_t):
                 return "gap"
             # Новый bar (append) — редко, pd.concat допустим
@@ -529,6 +635,33 @@ class ApiEngine:
         except Exception as _htf_e:  # noqa: BLE001 — без хранилища бот работает как раньше
             logger.warning("[HTF-STORE] не включён: %s", _htf_e)
 
+        # ARCH-153 (31.10): младшие ТФ (3m/5m/15m) при дыре или отсутствии записи собираются
+        # ЛОКАЛЬНО из хранилища Сферы 1 + текущая свеча WS, вместо 600 баров с биржи.
+        # config market_store.ltf_rebuild: off → прежнее поведение (сброс по дыре → REST).
+        try:
+            from core.infra.config_loader import config as _cfg_rb
+            _raw_rb = _cfg_rb.get("market_store.ltf_rebuild", "on")
+            _rb_on = bool(_raw_rb) if isinstance(_raw_rb, bool) else str(_raw_rb).lower() != "off"
+            self._cache.rebuild_enabled = _rb_on
+            logger.info("[LTF-REBUILD] локальная сборка записи вместо REST: %s",
+                        "вкл" if _rb_on else "выкл")
+        except Exception as _rb_e:  # noqa: BLE001 — флаг не прочитан → оставляем вкл
+            logger.warning("[LTF-REBUILD] флаг не прочитан (%s) — оставлен вкл", _rb_e)
+
+        # ARCH-153 (31.10): карантин прокси при бане 100410. Биржа время разблокировки в тексте
+        # ошибки не отдаёт (regex «unblocked after» не сработал ни разу), поэтому карантин был
+        # 30 с при реальном бане ~3 мин — прокси возвращался в пул ВНУТРИ бана и ловил новый 100410.
+        # Теперь: карантин прокси по замеру, глобальная пауза direct остаётся короткой (её цена —
+        # полная остановка данных, а не одного адреса).
+        try:
+            from core.infra.config_loader import config as _cfg_bq
+            self._ban_quarantine = float(_cfg_bq.get("proxy_pool.ban_quarantine_sec", 180.0))
+            self._ban_global_max = float(_cfg_bq.get("proxy_pool.ban_global_pause_sec", 60.0))
+        except Exception:                                   # noqa: BLE001 — как было
+            self._ban_quarantine, self._ban_global_max = 180.0, 60.0
+        logger.info("[BAN] карантин прокси при 100410: %.0f с · глобальная пауза direct: до %.0f с",
+                    self._ban_quarantine, self._ban_global_max)
+
     async def _ensure_bound_session(self) -> None:
         """Подменяет сессию ccxt на привязанную к локальному IP. Один раз, лениво.
 
@@ -618,6 +751,22 @@ class ApiEngine:
                 return cached
 
             # 2. Circuit breaker
+            # ARCH-153.2 (31.10, DS): ПОЧЕМУ промах — чтобы не гадать, откуда 3m/5m в REST.
+            # Причины лечатся по-разному: «нет записи» — WS не покрыл пару; «TTL истёк» —
+            # пара без сделок не обновляется; «глубина» — потребители просят разную глубину.
+            _miss_reason[self._cache.why_miss(cache_key, _fetch_limit, ttl)] += 1
+            # ARCH-153 (31.10, DS): записи нет вовсе → собрать её ЛОКАЛЬНО (хранилище Сферы 1
+            # + текущая свеча WS), а не тянуть 600 баров с биржи. Принимаем только сборку,
+            # где последний бар — ТЕКУЩИЙ: потребители ждут живой край, иначе честнее биржа.
+            _step = _TF_STEP_MS.get(timeframe, 0)
+            if _step and self._cache.rebuild_hook is not None:
+                _rb = self._cache.rebuild(cache_key, _fetch_limit)
+                if _rb is not None:
+                    _now_bar = int(time.time() * 1000) // _step * _step
+                    if int(_rb["time"].iloc[-1]) == _now_bar and len(_rb) >= limit:
+                        _ohlcv_cache_hit[timeframe] += 1
+                        return _rb.iloc[-limit:] if len(_rb) > limit else _rb
+                    self._cache._note_rebuild("not_live")
             if self._cb.is_open():
                 return None
 
@@ -689,6 +838,26 @@ class ApiEngine:
             try:
                 # Rate limiter: ждём свою очередь (token bucket + глобальный бан)
                 await self._rate_limiter.acquire()
+                try:   # ARCH-153.1: счётчик исходящих запросов по ТФ и пути (прокси/direct)
+                    from core.infra import req_counter
+                    req_counter.hit("bot", f"ohlcv:{timeframe}" + (":px" if self._proxy_pool is not None else ":direct"))
+                except Exception:
+                    pass
+                if self._proxy_pool is not None:
+                    # ARCH-153: все прокси в карантине → раньше сразу direct, а direct-IP уже забит
+                    # сателлитами, и его 100410 ставил ГЛОБАЛЬНУЮ паузу всему клиенту. Ждём ближайший
+                    # прокси ДО семафора: ждущий не держит слот, тикеры и свечи позиций идут дальше.
+                    # Не дождались (карантин > 65 с или снова все в карантине) → direct, как раньше.
+                    # Защита: ждём, только если прокси реально отвечали за последние 120 с. При полном
+                    # отказе пула (не продлили, провайдер лёг) ожидание бессмысленно → direct сразу, как до ARCH-153.
+                    _w = self._proxy_pool.seconds_until_alive()
+                    if 0 < _w <= 65 and time.monotonic() - getattr(self, "_px_last_ok", 0.0) < 120:
+                        try:
+                            from core.infra import req_counter
+                            req_counter.hit("bot", "wait_proxy")
+                        except Exception:
+                            pass
+                        await asyncio.sleep(_w + 0.2)
                 async with self._sem:
                     if self._proxy_pool is not None:
                         # PROXY-NODE: market-data через пул прокси (обход per-IP RPS).
@@ -705,6 +874,8 @@ class ApiEngine:
                             candles = await self._exchange.fetch_ohlcv(
                                 symbol, timeframe=timeframe, limit=limit, since=since)
                             self._proxy_pool.release(_pxurl, ok=True)
+                            if _pxurl is not None:
+                                self._px_last_ok = time.monotonic()   # ARCH-153: пул жив (для ожидания)
                             # throttled INFO-лог (каждый 25-й) — видно латентность прокси без спама
                             self._proxy_log_n = getattr(self, "_proxy_log_n", 0) + 1
                             if self._proxy_log_n % 25 == 0:
@@ -762,6 +933,7 @@ class ApiEngine:
                 if "100410" in exc_str:
                     # Извлекаем время разблокировки из ответа
                     wait = 30.0  # дефолт: 30 сек
+                    _parsed = False
                     try:
                         import re
                         m = re.search(r"unblocked after (\d+)", exc_str)
@@ -772,6 +944,7 @@ class ApiEngine:
                             delta = (unblock_ms - now_ms) / 1000.0
                             if 0 < delta < 300:
                                 wait = delta + 2.0  # +2 сек запас
+                                _parsed = True
                     except Exception:
                         pass
                     # 02.09.2026: 100410 выдаётся ПО IP — market-data идёт без ключа.
@@ -779,20 +952,26 @@ class ApiEngine:
                     # прежде один забаненный адрес ставил глобальную паузу и тормозил
                     # весь пул, из-за чего смысл прокси терялся ровно в тот момент,
                     # когда они нужнее всего. Глобальная пауза остаётся для direct.
+                    # 🔴 ARCH-153 (31.10, DS): биржа время разблокировки в тексте НЕ отдаёт —
+                    # regex не сработал ни разу, и прокси возвращался в пул через 30 с, то есть
+                    # ВНУТРИ бана (~3 мин по замерам), ловя следующий 100410. Не пришло время от
+                    # биржи → карантин прокси по замеру (config proxy_pool.ban_quarantine_sec).
+                    _px_wait = wait if _parsed else max(wait, self._ban_quarantine)
                     _quarantined = False
                     if self._proxy_pool is not None and _last_proxy is not None:
-                        _quarantined = self._proxy_pool.quarantine(_last_proxy, wait)
+                        _quarantined = self._proxy_pool.quarantine(_last_proxy, _px_wait)
                     if not _quarantined:
-                        self._rate_limiter.set_ban(wait)
+                        _pause = wait if _parsed else min(wait, self._ban_global_max)
+                        self._rate_limiter.set_ban(_pause)
                         logger.warning(
                             "BingX 100410 (temp ban) %s %s — ГЛОБАЛЬНАЯ пауза %.1f сек (попытка %d/3)",
-                            symbol, timeframe, wait, attempt + 1,
+                            symbol, timeframe, _pause, attempt + 1,
                         )
-                        await asyncio.sleep(wait)
+                        await asyncio.sleep(_pause)
                     else:
                         logger.info(
-                            "BingX 100410 %s %s — забанен ОДИН прокси на %.0fs, пул продолжает",
-                            symbol, timeframe, wait,
+                            "BingX 100410 %s %s — забанен ОДИН прокси (%s) на %.0fs, пул продолжает",
+                            symbol, timeframe, _px_host(_last_proxy), _px_wait,
                         )
                     last_exc = exc
                     continue

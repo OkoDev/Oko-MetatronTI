@@ -2752,6 +2752,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         from core.infra.api_engine import get_ohlcv_cache_stats, reset_ohlcv_cache_stats
         _ohlcv_stats = get_ohlcv_cache_stats()
         if _ohlcv_stats:
+            _miss_why = _ohlcv_stats.pop("_miss_reason", {})   # ARCH-153.2: причина промахов
             _total_rest = sum(v["rest"] for v in _ohlcv_stats.values())
             if _perf["rest"]:
                 import statistics as _pst
@@ -2796,9 +2797,11 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             "детекторы и прочее %.0f мс · всего %.2f с | цикл %.0f с, пар %d",
                             _mf*1000, _mc*1000, _other*1000, _mt,
                             _time.monotonic() - cycle_start, len(_perf["rest"]))
-            logger.info("[OHLCV-CACHE] REST=%d/цикл | %s", _total_rest, {
+            _rb_stats = _ohlcv_stats.pop("_rebuild", {})        # ARCH-153: собрано локально (не REST)
+            logger.info("[OHLCV-CACHE] REST=%d/цикл | %s | промахи: %s | локальная сборка: %s",
+                        _total_rest, {
                 tf: f"{v['hit']}h/{v['rest']}r ({v['hit_rate']:.0%})" for tf, v in sorted(_ohlcv_stats.items())
-            })
+            }, _miss_why, _rb_stats)
         reset_ohlcv_cache_stats()
     except Exception as _ocs_e:
         logger.debug("[OHLCV-CACHE] stats error: %s", _ocs_e)

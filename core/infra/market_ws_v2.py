@@ -182,6 +182,10 @@ class QueueReaderThread(threading.Thread):
         self._shadow = shadow
         self._spool_tfs = spool_tfs   # Сфера 1: закрытые бары этих ТФ → очередь хранилища (market_spool)
         self._last_row: dict = {}     # (sym, tf) → последнее обновление бара — очередь не зависит от кэша бота
+        # ARCH-153 (31.10): закрывшиеся бары, которые бот видел САМ. Хранилище Сферы 1 пишет
+        # закрытый бар с задержкой (замер 31.10: у 552 из 610 монет последний закрытый бар 3m/5m
+        # отстаёт на 2 шага), и без этого буфера сборку нельзя склеить без дыры.
+        self._closed_rows: dict = {}  # (sym, tf) → deque последних закрывшихся баров
         self._running = True
         self.stats = {
             "applied": 0, "errors": 0, "shadow": shadow,
@@ -190,26 +194,49 @@ class QueueReaderThread(threading.Thread):
         # Диагностика merge-результатов per TF (почему 5m hit низкий: skip/replace/stale?)
         from collections import Counter as _C
         self._merge_res: _C = _C()  # ключ (tf, result) → count
+        # ARCH-153 (31.10): читатель — единственное место, где есть ОБА источника (закрытые бары
+        # хранилища Сферы 1 и последняя свеча WS), поэтому именно он собирает запись заново,
+        # когда кэш потерял её по дыре. Раньше каждый рестарт = ~1100 REST-запросов на круг.
+        cache.rebuild_hook = self._rebuild_from_store
 
     _BATCH_MAX = 1000  # дренируем до 1000 элементов за цикл
 
     def _spool(self, s: str, t: str, r: dict) -> None:
         """Пришло обновление СЛЕДУЮЩЕГО бара → последнее обновление предыдущего = финал закрытого бара → очередь.
         30.09: раньше бар шёл в очередь только на «append» кэша бота — пары без записи в кэше (сброшены на REST,
-        скан их не запрашивал) молчали: 2–2.5% баров 3m/5m не доходили до хранилища даже без сбоев."""
+        скан их не запрашивал) молчали: 2–2.5% баров 3m/5m не доходили до хранилища даже без сбоев.
+        ARCH-153 (31.10): тот же закрывшийся бар кладём в память читателя — сборка записи
+        (см. `_rebuild_from_store`) берёт его оттуда, пока хранилище не дописало."""
         key = (s, t)
         prev = self._last_row.get(key)
         if prev is not None and r["time"] < prev["time"]:
             return                                     # опоздавшее сообщение старого бара — не откатываем
         self._last_row[key] = r
         if prev is not None and r["time"] > prev["time"]:
+            self._remember_closed(key, prev)
             from core.infra import market_spool
             market_spool.put(s, t, prev)
+
+    def _remember_closed(self, key: tuple, row: dict) -> None:
+        """Запомнить закрывшийся бар (последние 4 на пару) — сырьё для локальной сборки записи."""
+        from collections import deque as _dq
+        buf = self._closed_rows.get(key)
+        if buf is None:
+            buf = self._closed_rows[key] = _dq(maxlen=4)
+        if not buf or row["time"] > buf[-1]["time"]:
+            buf.append(row)
 
     def _merge_one(self, s: str, t: str, r: dict) -> None:
         try:
             if t in self._spool_tfs:
-                self._spool(s, t, r)
+                self._spool(s, t, r)          # он же ведёт _last_row для этих ТФ
+            else:
+                key = (s, t)
+                prev = self._last_row.get(key)
+                if prev is None or r["time"] >= prev["time"]:
+                    self._last_row[key] = r
+                if prev is not None and r["time"] > prev["time"]:
+                    self._remember_closed(key, prev)
             # ARCH-130: merge_dict избегает pd.DataFrame([r]) в hot path
             _res = self._cache.merge_dict((s, t), r)
             self.stats["applied"] += 1
@@ -217,6 +244,83 @@ class QueueReaderThread(threading.Thread):
         except Exception as e:
             self.stats["errors"] += 1
             logger.debug("[MarketWS-v2] reader merge error: %s", e)
+
+    # ── ARCH-153 (31.10): локальная сборка записи вместо REST ──────────────────
+    _REBUILD_TFS = ("3m", "5m", "15m")
+    # Хранилище отстало сильнее этого — это уже не «догоняет», а мёртвая пара: не подменяем
+    _REBUILD_MAX_LAG_STEPS = 3
+
+    def _rebuild_from_store(self, key: tuple, limit: int):
+        """Собрать запись (symbol, tf): закрытые бары Сферы 1 + память читателя + текущая свеча WS.
+
+        Возвращает DataFrame (time мс + OHLCV) или None, если собрать нельзя — тогда
+        вызывающий идёт прежним путём (REST). К бирже не ходит: только диск + память.
+        Зовётся из `OhlcvCache.rebuild` под его RLock.
+
+        Почему не только хранилище: замер 31.10 — у 552 из 610 монет последний закрытый бар
+        3m/5m отстаёт на 2 шага, у 15m — на 1. Склейка хранилища с текущим баром дала бы дыру
+        ровно в один бар, а ряд с дырой потребителям отдавать нельзя (починка 29.09). Пропуск
+        закрывает память читателя: бот видит, как бар закрывается, и держит последние 4.
+        """
+        s, t = key
+        if t not in self._REBUILD_TFS:
+            return None
+        from core.infra.api_engine import _TF_STEP_MS
+        from core.infra.market_store import base_of, is_synthetic, read_bars
+        step = _TF_STEP_MS.get(t)
+        if not step:
+            return None
+        base = base_of(s)
+        if is_synthetic(base):                       # акции/форекс/сырьё в хранилище не пишутся
+            return None
+        now_bar = int(time.time() * 1000) // step * step
+        cols = ["time", "open", "high", "low", "close", "volume"]
+        try:
+            d = read_bars(base, t, n=limit)
+        except Exception:                            # noqa: BLE001 — диск/паркет недоступен → REST
+            return None
+        if d is None or d.empty:
+            return None
+        # read_bars отдаёт DatetimeIndex + OHLCV (колонки time нет) — приводим к формату ApiEngine
+        store = d.assign(time=d.index.asi8 // 1_000_000)[cols]
+        store = store[store["time"] < now_bar]
+        if store.empty:
+            return None
+        last = int(store["time"].iloc[-1])
+        if (now_bar - last) > step * (self._REBUILD_MAX_LAG_STEPS + len(self._closed_rows.get(key, ()))):
+            return None                              # хранилище отстало настолько, что память не покроет
+        tail = [store]
+        # 1) бары, которые бот видел закрывшимися, но хранилище ещё не дописало
+        for row in self._closed_rows.get(key, ()):
+            if int(row["time"]) > last:
+                tail.append(pd.DataFrame([row])[cols])
+        d = pd.concat(tail, ignore_index=True).drop_duplicates("time", keep="last")
+        d = d.sort_values("time").reset_index(drop=True)
+        # 2) хранилище 3m/5m само с дырами (замер 31.10: чистый ряд у 178/610 по 3m и у 600/610
+        # по 15m). Ряд с дырой потребителям не отдаём (починка 29.09) — но чистый ХВОСТ после
+        # последней дыры годится, если он достаточно глубок.
+        gaps = d["time"].diff().iloc[1:] > step
+        if bool(gaps.any()):
+            _pos = len(gaps) - 1 - int(gaps.values[::-1].argmax())   # позиция ПОСЛЕДНЕЙ дыры
+            d = d.iloc[_pos + 1:].reset_index(drop=True)
+        # 3) живой край: текущая свеча из WS сразу за последним закрытым
+        cand = self._last_row.get(key)
+        if len(d) and cand and int(cand.get("time", 0)) == int(d["time"].iloc[-1]) + step:
+            d = pd.concat([d, pd.DataFrame([cand])[cols]], ignore_index=True)
+        d = d.iloc[-limit:].reset_index(drop=True).astype(
+            {"time": "int64", "open": "float64", "high": "float64",
+             "low": "float64", "close": "float64", "volume": "float64"})
+        if len(d) < 2:
+            return None
+        if not bool((d["time"].diff().iloc[1:] == step).all()):
+            self.stats["rebuild_hole"] = self.stats.get("rebuild_hole", 0) + 1
+            return None
+        if len(d) < limit:
+            # Глубина меньше канона — это ЗАКОННЫЙ ответ: чистый хвост после последней дыры.
+            # Кэш запишет фактическую глубину, и глубокий потребитель честно уйдёт в REST,
+            # а мелкие (20/100/150 — большинство запросов 3m/5m) получат данные даром.
+            self.stats["rebuild_short"] = self.stats.get("rebuild_short", 0) + 1
+        return d
 
     def run(self) -> None:
         while self._running:

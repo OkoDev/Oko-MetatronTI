@@ -102,6 +102,12 @@ class ProxyPool:
         ordered = alive[self._rr:] + alive[:self._rr]
         return min(ordered, key=lambda s: s.inflight)
 
+    def seconds_until_alive(self) -> float:
+        """Через сколько секунд оживёт ближайший прокси (0 — уже есть живой или пул пуст)."""
+        if not self._states or any(s.is_alive() for s in self._states):
+            return 0.0
+        return max(0.0, min(s.dead_until for s in self._states) - time.monotonic())
+
     async def acquire(self) -> Optional[str]:
         """Возвращает url прокси (с учётом его rps-бюджета) или None = direct fallback.
 
