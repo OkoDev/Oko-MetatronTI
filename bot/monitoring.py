@@ -728,6 +728,24 @@ def _is_in_sl_cooldown(bot, symbol: str, signal_type: str = "") -> bool:
     return False
 
 
+_SIGNAL_MEMO_TTL_H = 6      # T-03 (31.10): отметка дедупа живёт 12× окна (окно 30 мин) — логика не меняется
+_SIGNAL_MEMO_MAX = 20_000   # страховка от роста: при переборе чистим вне очереди
+
+
+def _sweep_last_signal(bot, now: datetime) -> int:
+    """T-03: вычистить отметки дедупа старше _SIGNAL_MEMO_TTL_H часов (раньше словарь рос вечно)."""
+    memo = getattr(bot, "_last_signal", None)
+    if not isinstance(memo, dict):
+        return 0
+    cut = now - timedelta(hours=_SIGNAL_MEMO_TTL_H)
+    stale = [k for k, ts in memo.items() if ts < cut]
+    for k in stale:
+        memo.pop(k, None)
+    if stale:
+        logger.debug("[dedup] вычищено устаревших отметок: %d (осталось %d)", len(stale), len(memo))
+    return len(stale)
+
+
 def _is_duplicate_signal(bot, symbol: str, signal_type: str, direction: str = "") -> bool:
     """Дедупликация по (пара, тип, направление).
     LONG WT по паре не блокирует SHORT WT по той же паре.
@@ -735,12 +753,18 @@ def _is_duplicate_signal(bot, symbol: str, signal_type: str, direction: str = ""
     minutes = bot.config.get("signal_quality.dedup_minutes", 30)
     if minutes <= 0:
         return False
+    now = datetime.now()
+    # T-03: словарь отметок не должен расти безгранично (вселенная меняется, мёртвые пары висят)
+    calls = getattr(bot, "_last_signal_calls", 0) + 1
+    bot._last_signal_calls = calls
+    if calls % 500 == 0 or len(getattr(bot, "_last_signal", {})) > _SIGNAL_MEMO_MAX:
+        _sweep_last_signal(bot, now)
     key = (symbol, signal_type, direction)
     last_ts = bot._last_signal.get(key)
-    if last_ts and (datetime.now() - last_ts).total_seconds() < minutes * 60:
+    if last_ts and (now - last_ts).total_seconds() < minutes * 60:
         logger.debug("[%s] Дубликат %s/%s — пропущен (%d мин)", symbol, signal_type, direction, minutes)
         return True
-    bot._last_signal[key] = datetime.now()
+    bot._last_signal[key] = now
     return False
 
 

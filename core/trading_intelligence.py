@@ -139,6 +139,11 @@ class TradingIntelligence:
         # Кэш для оптимизации
         self.analysis_cache: Dict[str, Tuple[datetime, TradingRecommendation]] = {}
         self.cache_ttl = 300  # 5 минут
+        # T-03 (закрыто 31.10): потолки кэшей. Раньше `analysis_cache` и `recommendation_history`
+        # росли без вытеснения (задача роя 10.06, переоткрывалась в аудите 17.10). По факту это
+        # мегабайты, а не причина рестартов (та — в PriceWS, ARCH-154), но лимит должен быть явным.
+        self._analysis_cache_max = 2000        # символов во вселенной ~600, запас ×3
+        self._history_max = 200                # последних рекомендаций НА ПАРУ (читают [-limit:])
         
         # ML модуль для улучшения предсказаний
         self.ml_predictor = None
@@ -610,9 +615,24 @@ class TradingIntelligence:
         return None
     
     def _cache_analysis(self, symbol: str, recommendation: TradingRecommendation):
-        """Кэширует результат анализа"""
+        """Кэширует результат анализа. T-03: не даём кэшу расти без потолка."""
         self.analysis_cache[symbol] = (datetime.now(), recommendation)
-        
+        limit = getattr(self, "_analysis_cache_max", 2000)
+        while len(self.analysis_cache) > limit:
+            # самый старый по метке записи: вытесняем его (вселенная ~600, сюда почти не доходит)
+            oldest = min(self.analysis_cache, key=lambda s: self.analysis_cache[s][0])
+            self.analysis_cache.pop(oldest, None)
+
+    def _remember_recommendation(self, symbol: str, recommendation: TradingRecommendation) -> None:
+        """T-03: история рекомендаций — только последние `_history_max` на пару (читают срезом [-limit:])."""
+        hist = self.recommendation_history.get(symbol)
+        if hist is None:
+            hist = self.recommendation_history[symbol] = []
+        hist.append(recommendation)
+        limit = getattr(self, "_history_max", 200)
+        if len(hist) > limit:
+            del hist[:len(hist) - limit]
+
     async def analyze_symbol(self, symbol: str, pre_collected_signals=None, manual_request: bool = False,
                              pre_fetched_dfs: Optional[Dict[str, Any]] = None,
                              extra_pre_signals=None) -> Optional[TradingRecommendation]:
@@ -2014,10 +2034,8 @@ class TradingIntelligence:
             # Кэшируем результат
             self._cache_analysis(symbol, recommendation)
             
-            # Сохраняем в историю
-            if symbol not in self.recommendation_history:
-                self.recommendation_history[symbol] = []
-            self.recommendation_history[symbol].append(recommendation)
+            # Сохраняем в историю (T-03: с потолком на пару, иначе список растёт вечно)
+            self._remember_recommendation(symbol, recommendation)
             
             # Обновляем статистику сигналов
             self._update_signal_statistics(filtered_signals, recommendation)
