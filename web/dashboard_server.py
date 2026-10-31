@@ -47,6 +47,25 @@ def _get_dash_executor() -> "_cf.ThreadPoolExecutor":
         _DASH_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=8, thread_name_prefix="dash")
     return _DASH_EXECUTOR
 
+
+_VIZ_EXECUTOR: "_cf.ThreadPoolExecutor | None" = None
+
+
+def _get_viz_executor() -> "_cf.ThreadPoolExecutor":
+    """31.10.2026: отдельный пул для /viz (subprocess ждёт до 180с).
+
+    Ни dash-, ни дефолтный пул тут не годятся:
+      - dash (8 воркеров) — 2-3 параллельных рендера съедят его на 3 минуты и
+        положат все панели Overview (тот же сценарий, что в комментарии выше);
+      - default (20 воркеров) — общий с хот-путями бота (bot/loops/*), прод-зависший
+        subprocess отъедал бы слот и у торговых циклов.
+    2 воркера: /viz открывает человек (1-2 вкладки), больше не нужно.
+    """
+    global _VIZ_EXECUTOR
+    if _VIZ_EXECUTOR is None or getattr(_VIZ_EXECUTOR, "_shutdown", False):
+        _VIZ_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=2, thread_name_prefix="viz")
+    return _VIZ_EXECUTOR
+
 # _HTML moved to web/static/
 
 
@@ -1007,8 +1026,10 @@ async def _stats_compute_and_cache(request: web.Request) -> web.Response:
         # DEV-231 (30.05): тяжёлая sync работа в thread pool — НЕ блокирует event loop.
         # До правки: 399 RequestHandler slow callbacks за 5 мин, avg 1.24s, total 493s
         # (event loop был занят дашбордом >100% времени → sync_time HTTP стояли в очереди).
-        _loop = asyncio.get_running_loop()
-        payload_str = await _loop.run_in_executor(None, _compute_stats_payload_sync, engine, dc, bot)
+        # 31.10.2026: было run_in_executor(None, ...) — дефолтный пул общий с хот-путями бота
+        # (bot/loops/*), пересчёт ждал за ними: MISS 3–20s против 2.4s изолированно.
+        # Теперь свой dash-пул (_get_dash_executor) — как и требует правило из шапки модуля.
+        payload_str = await _run_sync(_compute_stats_payload_sync, engine, dc, bot)
         _STATS_CACHE["payload"] = payload_str
         _STATS_CACHE["ts"] = _time.time()
         return web.Response(
@@ -3400,7 +3421,9 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
                 return _sp.run(cmd, cwd=str(root), capture_output=True, timeout=180)
 
             loop = asyncio.get_running_loop()
-            r = await loop.run_in_executor(None, _run)
+            # 31.10.2026: свой viz-пул, не default (20 воркеров общие с bot/loops/*)
+            # и не dash (8 воркеров на все панели, рендер держал бы слот до 180с).
+            r = await loop.run_in_executor(_get_viz_executor(), _run)
             if r.returncode != 0 or not out.exists():
                 msg = (r.stdout or b"") + (r.stderr or b"")
                 raise RuntimeError(msg.decode("utf-8", "replace")[-800:]
