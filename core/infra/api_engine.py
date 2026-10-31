@@ -210,7 +210,7 @@ class OhlcvCache:
         # диск читался бы заново на каждое сообщение и каждый круг скана впустую.
         _now = time.monotonic()
         _last = self._rebuild_at.get(key)
-        if _last is not None and _now - _last < _REBUILD_COOLDOWN_SEC:
+        if _last is not None and _now - _last < self._REBUILD_COOLDOWN_SEC:
             self.rebuild_stats["throttled"] = self.rebuild_stats.get("throttled", 0) + 1
             return None
         self._rebuild_at[key] = _now

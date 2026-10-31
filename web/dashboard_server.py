@@ -859,36 +859,81 @@ def _current_price_from_cache(dc, symbol: str):
 # TTL=30s (12.06): пересчёт payload ≈7s на холодную > старый TTL 5s → кэш почти
 # всегда холодный при поллинге каждые 10s → 7s-ответ рвал фронт-таймаут → MOCK.
 # 30s держит кэш тёплым (0.01s HIT), тяжёлый пересчёт раз в 30s в thread-pool.
-_STATS_CACHE = {"payload": None, "ts": 0.0, "ttl": 30.0}
+# 31.10.2026 (SWR): пересчёт — чистый Python (8 запросов + циклы по 60к сделок) и бьётся
+# за GIL со сканером. Замер на живом процессе: 2.3–21с в зависимости от загрузки ядра
+# (98% CPU одного ядра), стабильного времени нет. Поэтому клиент больше НЕ ждёт пересчёт:
+# есть payload → отдаём сразу (свежий или просроченный) + фоновой refresh.
+# Ждём только на первом запросе после старта, когда показывать нечего.
+_STATS_CACHE = {"payload": None, "ts": 0.0, "ttl": 30.0,
+                "refreshing": False, "task": None}
 _STATS_LOCK = None   # lazy init в _handle_stats (asyncio.Lock требует running loop)
 
 
+def _stats_schedule_refresh(app) -> None:
+    """Фоновой пересчёт /api/stats, single-flight (31.10.2026).
+
+    Не блокирует клиента и не плодит параллельные пересчёты: пока идёт один,
+    повторные вызовы просто возвращаются.
+    """
+    if _STATS_CACHE["refreshing"]:
+        return
+    _STATS_CACHE["refreshing"] = True
+    try:
+        # ссылку держим в кэше: иначе GC может собрать таск до завершения
+        _STATS_CACHE["task"] = asyncio.create_task(_stats_refresh_bg(app))
+    except Exception:
+        _STATS_CACHE["refreshing"] = False
+        logger.exception("dashboard /api/stats: не удалось запустить refresh")
+
+
+async def _stats_refresh_bg(app) -> None:
+    import time as _time
+    try:
+        payload_str = await _run_sync(
+            _compute_stats_payload_sync,
+            app["engine"], app.get("data_collector"), app.get("bot"),
+        )
+        _STATS_CACHE["payload"] = payload_str
+        _STATS_CACHE["ts"] = _time.time()
+    except Exception as e:
+        logger.exception("dashboard /api/stats refresh: %s", e)
+    finally:
+        _STATS_CACHE["refreshing"] = False
+
+
 async def _handle_stats(request: web.Request) -> web.Response:
+    """GET /api/stats — stale-while-revalidate (31.10.2026).
+
+    Было: каждый промах TTL заставлял клиента ждать пересчёт (до 21с на живом
+    процессе). Стало: просроченный payload отдаётся сразу, пересчёт идёт в фоне.
+    """
     global _STATS_LOCK
     if _STATS_LOCK is None:
         import asyncio as _aio
         _STATS_LOCK = _aio.Lock()
-    """GET /api/stats — D-074 (26.05): cache TTL=5s. Per-client aggregation
-    блокировала event loop при N клиентах × 5s polling (SSE inline call)."""
     import time as _time
-    now = _time.time()
     cached = _STATS_CACHE["payload"]
-    if cached is not None and (now - _STATS_CACHE["ts"]) < _STATS_CACHE["ttl"]:
+    if cached is not None:
+        age = _time.time() - _STATS_CACHE["ts"]
+        fresh = age < _STATS_CACHE["ttl"]
+        if not fresh:
+            _stats_schedule_refresh(request.app)
         return web.Response(
             text=cached,
             content_type="application/json", charset="utf-8",
-            headers={"X-Cache": "HIT", "X-Cache-Age": f"{now - _STATS_CACHE['ts']:.1f}"},
+            headers={"X-Cache": "HIT" if fresh else "STALE",
+                     "X-Cache-Age": f"{age:.1f}"},
         )
 
+    # Первый запрос после старта: показывать нечего — ждём пересчёт.
     async with _STATS_LOCK:
-        # Double-check: первый клиент через lock мог уже заполнить cache
-        now2 = _time.time()
-        cached2 = _STATS_CACHE["payload"]
-        if cached2 is not None and (now2 - _STATS_CACHE["ts"]) < _STATS_CACHE["ttl"]:
+        cached2 = _STATS_CACHE["payload"]      # double-check: мог заполнить другой клиент
+        if cached2 is not None:
             return web.Response(
                 text=cached2,
                 content_type="application/json", charset="utf-8",
-                headers={"X-Cache": "HIT-LOCK", "X-Cache-Age": f"{now2 - _STATS_CACHE['ts']:.1f}"},
+                headers={"X-Cache": "HIT-LOCK",
+                         "X-Cache-Age": f"{_time.time() - _STATS_CACHE['ts']:.1f}"},
             )
         return await _stats_compute_and_cache(request)
 
