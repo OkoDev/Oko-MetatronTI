@@ -141,6 +141,10 @@ class PerformanceSection(BaseModel):
     price_ws_batch: int = Field(default=100, ge=10, le=200)
     price_ws_fast_channel: str = "lastPrice"
     price_ws_fast_limit: int = Field(default=60, ge=0, le=200)
+    # ARCH-154 (31.10): ловец эпизодов роста памяти в потоке цены (только читает счётчики)
+    price_ws_catch_sec: float = Field(default=10.0, ge=1.0, le=300.0)
+    price_ws_catch_heap_warn: int = Field(default=50_000, ge=100, le=10_000_000)
+    price_ws_catch_heap_episode: int = Field(default=500_000, ge=1000, le=100_000_000)
     rest_bind_ip_prefix: str = ""   # N11: REST мимо VPN (пусто = через туннель)
     sim_time_exit_hours: int = Field(default=48, ge=0, le=10000)  # анти-орфан SIM
 
