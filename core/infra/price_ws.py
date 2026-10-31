@@ -30,6 +30,7 @@ import io
 import json
 import logging
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -397,6 +398,7 @@ class PriceWS:
             "uptime_sec": int(time.time() - self._started_at) if self._started_at else 0,
             "heap": heap,
             "rss_mb": rss,
+            "alloc_blocks": sys.getallocatedblocks(),     # дешёвая подсказка: растут ли объекты
             "timers_cancelled": getattr(loop, "_timer_cancelled_count", 0),
             "ready": len(getattr(loop, "_ready", ())),
             "updates": self.stats["updates"],
@@ -449,7 +451,9 @@ class PriceWS:
                                  rec["unsub"], rec["subscribed"], rec["want"],
                                  rec["conns"], rec["reconn"])
                 now = time.monotonic()
-                periodic = now - _last_write >= 60           # «живой» след раз в минуту
+                # в норме — след раз в минуту; при warn/episode пишем КАЖДЫЙ замер (10 с),
+                # чтобы разгон был виден по шагам, а не одной точкой
+                periodic = now - _last_write >= (60 if sev == "ok" else _CATCH_SEC)
                 if periodic:
                     _last_write = now
                     asyncio.create_task(asyncio.to_thread(_append_catch_log, rec))

@@ -40,6 +40,7 @@ def test_snapshot_reports_process_memory_field():
 
     snap = asyncio.run(_run())
     assert "rss_mb" in snap and (snap["rss_mb"] is None or snap["rss_mb"] > 0)
+    assert isinstance(snap["alloc_blocks"], int) and snap["alloc_blocks"] > 0
     assert snap["severity"] in ("ok", "warn", "episode")
 
 
