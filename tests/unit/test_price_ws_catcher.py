@@ -106,3 +106,56 @@ def test_anom_counters_start_empty():
     feed = pw.PriceWS(["BTC/USDT:USDT"], fast_channel="")
     assert set(feed.anom) == {"recv", "timeout", "nonmsg", "spin", "err", "reconn", "sub", "unsub"}
     assert sum(feed.anom.values()) == 0
+
+
+# ── стоп-кран разгона (эпизод 31.10 08:14) ────────────────────────────────────
+def test_is_spin_burst_thresholds():
+    limit = pw._RECV_MAX_PER_SEC
+    assert pw.is_spin_burst(200, 1.0) is False           # 200/с — норма для 10 пар
+    assert pw.is_spin_burst(200, 0.2) is False           # 1000/с — ещё рынок
+    assert pw.is_spin_burst(limit, 1.0) is False          # ровно на границе — не рвём
+    assert pw.is_spin_burst(limit + 1, 1.0) is True       # чуть выше границы — разгон
+    assert pw.is_spin_burst(200, 200 / (limit * 4)) is True   # вчетверо выше границы
+    assert pw.is_spin_burst(200, 0.0001) is True          # 2 млн/с — то, что видели живьём
+    assert pw.is_spin_burst(0, 0.0) is False              # защита от деления на ноль
+
+
+# ── внешний сторож: обязан видеть разгон, когда цикл занят ────────────────────
+def test_watchdog_writes_records_from_its_own_thread(tmp_path, monkeypatch):
+    log = tmp_path / "catch.jsonl"
+    monkeypatch.setattr(pw, "_CATCH_LOG", log)
+    monkeypatch.setattr(pw, "_CATCH_WD_SEC", 0.05)
+
+    async def _run():
+        feed = pw.PriceWS(["BTC/USDT:USDT"], fast_channel="")
+        feed._started_at = time.time()
+        feed._loop = asyncio.get_running_loop()
+        feed._start_catch_watchdog()
+        await asyncio.sleep(0.35)
+        feed.stop()                                     # вторая остановка — по флагу
+        await asyncio.sleep(0.15)
+        return feed
+
+    feed = asyncio.run(_run())
+    rows = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    assert rows, "сторож не записал ни одного среза"
+    assert all(r["src"] == "wd" for r in rows)
+    assert {"heap", "rss_mb", "severity", "recv", "timers_cancelled"} <= set(rows[0])
+    assert not feed._wd_thread.is_alive()                # поток корректно завершился
+
+
+def test_watchdog_survives_starved_loop():
+    """Главное свойство: срез снимается, пока цикл выжжен (эпизод 08:14 — ловец в цикле молчал)."""
+    async def _run():
+        feed = pw.PriceWS(["BTC/USDT:USDT"], fast_channel="")
+        feed._started_at = time.time()
+        feed._loop = asyncio.get_running_loop()
+        # имитируем занятость цикла: синхронный «тяжёлый» код без await
+        heavy = sum(i * i for i in range(3_000_000))
+        snap = feed._watchdog_sample()                  # снимаем так, как это делает поток
+        feed.stop()
+        return snap, heavy
+
+    snap, _ = asyncio.run(_run())
+    assert snap["src"] == "wd" and snap["heap"] >= 0
+    assert snap["severity"] in ("ok", "warn", "episode")

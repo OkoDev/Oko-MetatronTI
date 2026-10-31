@@ -60,6 +60,26 @@ _CATCH_HEAP_WARN = 50_000       # 50 тыс. таймеров в очереди 
 _CATCH_HEAP_EPISODE = 500_000   # 0,5 млн — явный разгон (в бою видели до 61 млн)
 _CATCH_LOG = Path("logs/price_ws_catch.jsonl")
 
+# 🔴 31.10 08:14–08:24 (эпизод пойман живьём): ловец ВНУТРИ цикла замолчал, потому что цикл был занят
+# (`py-spy`: поток PriceWS active+gil в `wait_for`@_priority_connection). Сторож, стоящий в горящем
+# доме, не звонит. Поэтому основной сторож — отдельный ПОТОК: он получает GIL между переключениями
+# и видит разгон, даже когда цикл выжжен. Шаг 5 с, память меряется как у `pm2_guard`.
+_CATCH_WD_SEC = 5.0
+
+# Стоп-кран разгона: 10 пар lastPrice не могут дать тысячи сообщений в секунду. Если дают — поток
+# сломан (мгновенная отдача из буфера), и каждый приём рождает `Timeout`+`TimerHandle` в очереди.
+_RECV_MAX_PER_SEC = 3_000
+_SPIN_BURST_N = 200             # проверяем частоту каждые 200 приёмов…
+_RECV_BURST_MIN_SEC = 0.05      # …если 200 пришли быстрее 50 мс → это >4000/с
+_SPIN_BREAK_SEC = 3             # столько «плохих» окон подряд → принудительный реконнект
+
+
+def is_spin_burst(n: int, dt: float, max_per_sec: int = _RECV_MAX_PER_SEC) -> bool:
+    """Частота приёма выше разумной? (чистая функция — под тест)."""
+    if dt <= 0 or n <= 0:
+        return False
+    return (n / dt) > max_per_sec
+
 
 def episode_severity(heap: int, warn: int = _CATCH_HEAP_WARN, episode: int = _CATCH_HEAP_EPISODE) -> str:
     """'ok' | 'warn' | 'episode' по размеру очереди таймеров цикла (чистая функция — под тест)."""
@@ -133,6 +153,9 @@ class PriceWS:
         self._events: collections.deque = collections.deque(maxlen=40)   # (ts, вид, деталь)
         self._fast_state = {"want": 0, "subscribed": 0}
         self._evidence_dumped = False        # улики эпизода пишем один раз за процесс
+        self._loop = None                    # цикл этого потока — нужен внешнему сторожу
+        self._wd_thread = None               # сторож в отдельном потоке (не глохнет вместе с циклом)
+        self._wd_stop = threading.Event()
 
     # ── интерфейс потребителя (совместим с WsFeed) ───────────────────────────
     def get_price(self, symbol: str) -> Optional[float]:
@@ -331,6 +354,7 @@ class PriceWS:
                                 subscribed = want
                             self._fast_state["subscribed"] = len(subscribed)
                             deadline = time.time() + 30
+                            _win_n, _win_t, _bad = 0, time.monotonic(), 0
                             while self._running and time.time() < deadline:
                                 try:
                                     _t0 = time.monotonic()
@@ -338,6 +362,28 @@ class PriceWS:
                                     self.anom["recv"] += 1
                                     if time.monotonic() - _t0 < 0.002:   # приём «вхолостую» — признак спина
                                         self.anom["spin"] += 1
+                                    # СТОП-КРАН (31.10 08:14): мгновенная отдача сообщений крутит цикл с
+                                    # огромной частотой, и каждый `wait_for` кладёт TimerHandle в очередь
+                                    # на 5 с вперёд. 10 пар lastPrice не могут дать тысячи сообщений/с.
+                                    _win_n += 1
+                                    if _win_n % _SPIN_BURST_N == 0:
+                                        _dt = time.monotonic() - _win_t
+                                        if is_spin_burst(_SPIN_BURST_N, _dt):
+                                            _bad += 1
+                                            logger.error("[PriceWS][CATCH] РАЗГОН приёма: %d сообщений "
+                                                         "за %.3f с (≈%.0f/с) — пауза 0,2 с",
+                                                         _SPIN_BURST_N, _dt,
+                                                         _SPIN_BURST_N / max(_dt, 1e-6))
+                                            self._note("spin_burst", f"{_SPIN_BURST_N}/{_dt:.3f}с")
+                                            await asyncio.sleep(0.2)
+                                        else:
+                                            _bad = 0
+                                        _win_t, _win_n = time.monotonic(), 0
+                                        if _bad >= _SPIN_BREAK_SEC:
+                                            logger.error("[PriceWS][CATCH] разгон не прекращается "
+                                                         "(%d окна подряд) — принудительный реконнект", _bad)
+                                            self._note("spin_break", f"{_bad} окна")
+                                            raise RuntimeError("спин приёма: реконнект по стоп-крану")
                                 except asyncio.TimeoutError:
                                     self.anom["timeout"] += 1
                                     continue
@@ -500,20 +546,24 @@ class PriceWS:
             logger.warning("[PriceWS][CATCH] не смог сложить улики: %s", e)
 
     def _catch_report(self, rec: dict, write_file: bool = True) -> None:
-        """Смена состояния ловца: файл + Telegram + WATCH.md + шина (`_alert.notify`)."""
+        """Смена состояния ловца (из цикла): файл в поток, оповещение тоже в поток."""
         if write_file:
             asyncio.create_task(asyncio.to_thread(_append_catch_log, rec))
+        asyncio.create_task(asyncio.to_thread(self._notify_episode, rec))
+
+    def _notify_episode(self, rec: dict) -> None:
+        """Оповещение о смене состояния. Без asyncio — зовётся и из цикла, и из сторожа-потока."""
         try:
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
             from scripts._alert import notify as _notify
             state = {"episode": "EPISODE", "warn": "WARN", "ok": "OK"}[rec["severity"]]
-            detail = (f"таймеров {rec['heap']:,} (+{rec['heap_delta']:,}) · "
+            detail = (f"таймеров {rec.get('heap')} (+{rec.get('heap_delta')}) · "
                       f"память {rec.get('rss_mb')} МБ (+{rec.get('rss_delta')}) · "
-                      f"приём {rec['recv_per_s']}/с · таймаутов {rec['timeout_per_s']}/с · "
-                      f"спин {rec['spin_per_s']}/с · отписки {rec['unsub']} · "
-                      f"подписок {rec['subscribed']}/{rec['want']} · "
-                      f"конн {rec['conns']} · реконнектов {rec['reconn']}")
+                      f"приём {rec.get('recv_per_s')}/с · таймаутов {rec.get('timeout_per_s')}/с · "
+                      f"спин {rec.get('spin_per_s')}/с · отписки {rec.get('unsub')} · "
+                      f"подписок {rec.get('subscribed')}/{rec.get('want')} · "
+                      f"конн {rec.get('conns')} · реконнектов {rec.get('reconn')}")
             _notify("price_ws_episode", state,
                     title=f"ARCH-154 · ловец эпизодов PriceWS · {state}",
                     tg_text=f"*ARCH-154 · PriceWS* — {state}\n{detail}",
@@ -521,9 +571,95 @@ class PriceWS:
         except Exception as e:                              # noqa: BLE001 — оповещение не роняет WS
             logger.warning("[PriceWS][CATCH] оповещение не отправлено: %s", e)
 
+    # ── ВНЕШНИЙ СТОРОЖ (отдельный поток) ──────────────────────────────────────
+    def _watchdog_sample(self) -> dict:
+        """Срез снаружи цикла: те же числа, но читаются из чужого потока (GIL между переключениями)."""
+        loop = self._loop
+        heap = len(getattr(loop, "_scheduled", ())) if loop is not None else -1
+        cancelled = getattr(loop, "_timer_cancelled_count", -1) if loop is not None else -1
+        ready = len(getattr(loop, "_ready", ())) if loop is not None else -1
+        rss = None
+        try:
+            from core.infra.mem_census import _private_mb
+            rss = _private_mb()
+        except Exception:                                   # noqa: BLE001
+            rss = None
+        anom = dict(self.anom)
+        rec = {
+            "src": "wd",
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "uptime_sec": int(time.time() - self._started_at) if self._started_at else 0,
+            "heap": heap,
+            "timers_cancelled": cancelled,
+            "ready": ready,
+            "rss_mb": rss,
+            "thread_alive": bool(self._wd_thread and self._wd_thread.is_alive()),
+            "severity": catch_severity(heap if heap >= 0 else 0, rss,
+                                       warn=_CATCH_HEAP_WARN, episode=_CATCH_HEAP_EPISODE,
+                                       rss_warn=_CATCH_RSS_WARN_MB,
+                                       rss_episode=_CATCH_RSS_EPISODE_MB),
+        }
+        rec.update(anom)
+        return rec
+
+    def _start_catch_watchdog(self) -> None:
+        if self._wd_thread is not None and self._wd_thread.is_alive():
+            return
+        self._wd_stop.clear()
+        self._wd_thread = threading.Thread(target=self._watchdog_loop,
+                                           name="PriceWS-watchdog", daemon=True)
+        self._wd_thread.start()
+        logger.info("[PriceWS][CATCH] внешний сторож поднят: поток %s, шаг %.0f с",
+                    self._wd_thread.name, _CATCH_WD_SEC)
+
+    def _watchdog_loop(self) -> None:
+        """Сторож вне цикла: жив, даже когда цикл занят разгоном (эпизод 31.10 08:14 это доказал)."""
+        prev = None
+        last_state = None
+        last_write = 0.0
+        while not self._wd_stop.wait(_CATCH_WD_SEC):
+            try:
+                rec = self._watchdog_sample()
+            except Exception as e:                          # noqa: BLE001 — сторож не падает
+                logger.debug("[PriceWS][CATCH] срез сторожа не снят: %s", e)
+                continue
+            if prev is not None:
+                dt = max(1e-6, rec["uptime_sec"] - prev["uptime_sec"])
+                rec["heap_delta"] = rec["heap"] - prev["heap"]
+                rec["recv_per_s"] = round((rec["recv"] - prev["recv"]) / dt, 1)
+                rec["timeout_per_s"] = round((rec["timeout"] - prev["timeout"]) / dt, 1)
+                rec["spin_per_s"] = round((rec["spin"] - prev["spin"]) / dt, 1)
+                rec["rss_delta"] = (round(rec["rss_mb"] - prev["rss_mb"], 1)
+                                    if rec.get("rss_mb") is not None and prev.get("rss_mb") is not None
+                                    else None)
+            else:
+                rec.update({"heap_delta": 0, "recv_per_s": 0, "timeout_per_s": 0,
+                            "spin_per_s": 0, "rss_delta": None})
+            prev = rec
+            sev = rec["severity"]
+            if sev != "ok":
+                logger.error("[PriceWS][CATCH][WD] %s: таймеров %s (+%s за %.0f с) · память %s МБ "
+                             "(+%s) · приём %s/с · таймаутов %s/с · спин %s/с",
+                             sev.upper(), rec["heap"], rec["heap_delta"], _CATCH_WD_SEC,
+                             rec["rss_mb"], rec["rss_delta"], rec["recv_per_s"],
+                             rec["timeout_per_s"], rec["spin_per_s"])
+            now = time.monotonic()
+            if sev != "ok" or now - last_write >= 60:
+                last_write = now
+                _append_catch_log(rec)                      # блокирующая запись — мы в своём потоке
+            if sev != last_state:
+                if last_state is not None:                  # первый срез не звонит
+                    self._notify_episode(rec)
+                    if sev != "ok" and not self._evidence_dumped:
+                        self._evidence_dumped = True
+                        self._catch_dump_evidence(rec)
+                last_state = sev
+
     async def run(self) -> None:
         self._running = True
         self._started_at = time.time()
+        self._loop = asyncio.get_running_loop()
+        self._start_catch_watchdog()
         batches = [self._symbols[i:i + self._batch]
                    for i in range(0, len(self._symbols), self._batch)]
         logger.info("[PriceWS] старт: пар %d, соединений %d, канал %s",
@@ -536,6 +672,10 @@ class PriceWS:
                     "episode %d таймеров", _CATCH_SEC, _CATCH_HEAP_WARN, _CATCH_HEAP_EPISODE)
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    def stop(self) -> None:
+        self._running = False
+        self._wd_stop.set()        # внешний сторож останавливаем вместе с потоком
+
 
 def _append_catch_log(rec: dict) -> None:
     """Дописать срез ловца в JSONL (в отдельном потоке — WS-цикл не ждёт диск)."""
@@ -546,8 +686,6 @@ def _append_catch_log(rec: dict) -> None:
     except Exception as e:                                  # noqa: BLE001
         logger.debug("[PriceWS][CATCH] запись среза: %s", e)
 
-    def stop(self) -> None:
-        self._running = False
 
 
 def _open_trade_symbols() -> set:
