@@ -355,54 +355,55 @@ class PriceWS:
                             self._fast_state["subscribed"] = len(subscribed)
                             deadline = time.time() + 30
                             _win_n, _win_t, _bad = 0, time.monotonic(), 0
-                            while self._running and time.time() < deadline:
-                                try:
-                                    _t0 = time.monotonic()
-                                    m = await asyncio.wait_for(ws.receive(), timeout=5)
-                                    self.anom["recv"] += 1
-                                    if time.monotonic() - _t0 < 0.002:   # приём «вхолостую» — признак спина
-                                        self.anom["spin"] += 1
-                                    # СТОП-КРАН (31.10 08:14): мгновенная отдача сообщений крутит цикл с
-                                    # огромной частотой, и каждый `wait_for` кладёт TimerHandle в очередь
-                                    # на 5 с вперёд. 10 пар lastPrice не могут дать тысячи сообщений/с.
-                                    _win_n += 1
-                                    if _win_n % _SPIN_BURST_N == 0:
-                                        _dt = time.monotonic() - _win_t
-                                        if is_spin_burst(_SPIN_BURST_N, _dt):
-                                            _bad += 1
-                                            logger.error("[PriceWS][CATCH] РАЗГОН приёма: %d сообщений "
-                                                         "за %.3f с (≈%.0f/с) — пауза 0,2 с",
-                                                         _SPIN_BURST_N, _dt,
-                                                         _SPIN_BURST_N / max(_dt, 1e-6))
-                                            self._note("spin_burst", f"{_SPIN_BURST_N}/{_dt:.3f}с")
-                                            await asyncio.sleep(0.2)
-                                        else:
-                                            _bad = 0
-                                        _win_t, _win_n = time.monotonic(), 0
-                                        if _bad >= _SPIN_BREAK_SEC:
-                                            logger.error("[PriceWS][CATCH] разгон не прекращается "
-                                                         "(%d окна подряд) — принудительный реконнект", _bad)
-                                            self._note("spin_break", f"{_bad} окна")
-                                            raise RuntimeError("спин приёма: реконнект по стоп-крану")
-                                except asyncio.TimeoutError:
-                                    self.anom["timeout"] += 1
-                                    continue
-                                if m.type not in (aiohttp.WSMsgType.BINARY, aiohttp.WSMsgType.TEXT):
-                                    self.anom["nonmsg"] += 1
-                                    self._note("recv_nonmsg", str(m.type))
-                                    break
-                                raw = self._decode(m.data)
-                                if raw == "Ping" or '"ping"' in raw.lower():
-                                    self.stats["pings"] += 1
-                                    await ws.send_str("Pong")
-                                    continue
-                                try:
-                                    msg = json.loads(raw)
-                                except Exception:       # noqa: BLE001
-                                    continue
-                                parsed = self._parse(msg, channel=self._fast_channel)
-                                if parsed:
-                                    self._on_price(parsed[0], parsed[1], fast=True)
+                            # ОДИН таймер на окно, а не на сообщение (эпизод 31.10 08:14): `wait_for`
+                            # в цикле по сообщениям создавал Timeout+TimerHandle на каждый приём и при
+                            # мгновенной отдаче забивал очередь таймеров на миллионы.
+                            try:
+                                async with asyncio.timeout(max(1.0, deadline - time.time())):
+                                    while self._running and time.time() < deadline:
+                                        _t0 = time.monotonic()
+                                        m = await ws.receive()
+                                        self.anom["recv"] += 1
+                                        if time.monotonic() - _t0 < 0.002:   # приём «вхолостую» — признак спина
+                                            self.anom["spin"] += 1
+                                        # СТОП-КРАН: 10 пар lastPrice не могут дать тысячи сообщений/с.
+                                        _win_n += 1
+                                        if _win_n % _SPIN_BURST_N == 0:
+                                            _dt = time.monotonic() - _win_t
+                                            if is_spin_burst(_SPIN_BURST_N, _dt):
+                                                _bad += 1
+                                                logger.error("[PriceWS][CATCH] РАЗГОН приёма: %d сообщений "
+                                                             "за %.3f с (≈%.0f/с) — пауза 0,2 с",
+                                                             _SPIN_BURST_N, _dt,
+                                                             _SPIN_BURST_N / max(_dt, 1e-6))
+                                                self._note("spin_burst", f"{_SPIN_BURST_N}/{_dt:.3f}с")
+                                                await asyncio.sleep(0.2)
+                                            else:
+                                                _bad = 0
+                                            _win_t, _win_n = time.monotonic(), 0
+                                            if _bad >= _SPIN_BREAK_SEC:
+                                                logger.error("[PriceWS][CATCH] разгон не прекращается "
+                                                             "(%d окна подряд) — принудительный реконнект", _bad)
+                                                self._note("spin_break", f"{_bad} окна")
+                                                raise RuntimeError("спин приёма: реконнект по стоп-крану")
+                                        if m.type not in (aiohttp.WSMsgType.BINARY, aiohttp.WSMsgType.TEXT):
+                                            self.anom["nonmsg"] += 1
+                                            self._note("recv_nonmsg", str(m.type))
+                                            break
+                                        raw = self._decode(m.data)
+                                        if raw == "Ping" or '"ping"' in raw.lower():
+                                            self.stats["pings"] += 1
+                                            await ws.send_str("Pong")
+                                            continue
+                                        try:
+                                            msg = json.loads(raw)
+                                        except Exception:       # noqa: BLE001
+                                            continue
+                                        parsed = self._parse(msg, channel=self._fast_channel)
+                                        if parsed:
+                                            self._on_price(parsed[0], parsed[1], fast=True)
+                            except TimeoutError:
+                                self.anom["timeout"] += 1       # окно 30 с истекло — обновляем подписки
             except asyncio.CancelledError:
                 raise
             except Exception as e:                      # noqa: BLE001
