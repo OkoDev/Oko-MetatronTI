@@ -72,6 +72,27 @@ def test_note_keeps_only_last_ring_and_survives():
     assert feed._events[-1][2] == "#59"
 
 
+def test_evidence_dump_writes_full_picture(tmp_path, monkeypatch):
+    """Улики эпизода должны остаться на диске, даже если бота убьют через минуту."""
+    import json
+    monkeypatch.setattr(pw, "_CATCH_LOG", tmp_path / "price_ws_catch.jsonl")
+    feed = pw.PriceWS(["BTC/USDT:USDT"], fast_channel="lastPrice")
+    feed._note("fast_reconn", "проверка")
+    rec = {"ts": "2026-10-31T05:00:00+00:00", "heap": 900_000, "rss_mb": 6500.0,
+           "heap_delta": 120_000, "rss_delta": 700.0, "recv_per_s": 1.2, "timeout_per_s": 0.0,
+           "spin_per_s": 0.0, "unsub": 0, "subscribed": 10, "want": 10, "conns": 9,
+           "reconn": 0, "severity": "episode"}
+    feed._catch_dump_evidence(rec)
+    files = list(tmp_path.glob("price_ws_episode_*.json"))
+    assert len(files) == 1
+    data = json.loads(files[0].read_text(encoding="utf-8"))
+    assert data["record"]["severity"] == "episode"
+    assert data["events"][0][1] == "fast_reconn"
+    assert data["fast_channel"] == "lastPrice" and data["symbols"] == 1
+    for key in ("gc_counts", "gc_stats", "threads", "anom", "stats", "fast_state"):
+        assert key in data, key
+
+
 def test_catch_log_appends_jsonl(tmp_path, monkeypatch):
     log = tmp_path / "catch.jsonl"
     monkeypatch.setattr(pw, "_CATCH_LOG", log)

@@ -132,6 +132,7 @@ class PriceWS:
                      "err": 0, "reconn": 0, "sub": 0, "unsub": 0}
         self._events: collections.deque = collections.deque(maxlen=40)   # (ts, вид, деталь)
         self._fast_state = {"want": 0, "subscribed": 0}
+        self._evidence_dumped = False        # улики эпизода пишем один раз за процесс
 
     # ── интерфейс потребителя (совместим с WsFeed) ───────────────────────────
     def get_price(self, symbol: str) -> Optional[float]:
@@ -462,11 +463,41 @@ class PriceWS:
                     # запись в файл уже сделана выше (periodic), дубль не нужен
                     if last_state is not None:
                         self._catch_report(rec, write_file=not periodic)
+                    if sev != "ok" and not self._evidence_dumped:
+                        # первый же разгон складываем в файл целиком: даже если бота убьют через
+                        # минуту, улики останутся (без них придётся ждать следующего эпизода)
+                        self._evidence_dumped = True
+                        self._catch_dump_evidence(rec)
                     last_state = sev
         except asyncio.CancelledError:
             raise
         except Exception as e:                              # noqa: BLE001 — ловец не роняет WS
             logger.warning("[PriceWS][CATCH] ловец остановлен: %s: %s", type(e).__name__, e)
+
+    def _catch_dump_evidence(self, rec: dict) -> None:
+        """Улики эпизода: срез + gc-статистика + потоки + кольцо событий (один раз за процесс)."""
+        try:
+            import gc
+            out = _CATCH_LOG.parent / (
+                "price_ws_episode_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + ".json")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "record": rec,
+                "gc_counts": list(gc.get_count()),
+                "gc_stats": [dict(g) for g in gc.get_stats()],
+                "threads": sorted(t.name for t in threading.enumerate()),
+                "anom": dict(self.anom),
+                "stats": dict(self.stats),
+                "fast_state": dict(self._fast_state),
+                "events": list(self._events),
+                "channel": self._channel,
+                "fast_channel": self._fast_channel,
+                "symbols": len(self._symbols),
+            }
+            out.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+            logger.error("[PriceWS][CATCH] улики эпизода сложены в %s", out)
+        except Exception as e:                              # noqa: BLE001 — улики не роняют WS
+            logger.warning("[PriceWS][CATCH] не смог сложить улики: %s", e)
 
     def _catch_report(self, rec: dict, write_file: bool = True) -> None:
         """Смена состояния ловца: файл + Telegram + WATCH.md + шина (`_alert.notify`)."""
